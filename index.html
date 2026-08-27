@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>部署链路测试 · 肃清协议 3D</title>
+<style>
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  body{
+    min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:#0a0d12; color:#e7eaf0;
+    font-family:'Segoe UI','Microsoft YaHei',sans-serif; line-height:1.7;
+    background-image:
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.02) 0 1px, transparent 1px 32px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.02) 0 1px, transparent 1px 32px);
+  }
+  .card{
+    max-width:560px; padding:44px 40px; margin:24px;
+    background:#12161f; border:1px solid #272e3a; border-radius:10px;
+  }
+  .tag{
+    font-family:Consolas,monospace; font-size:0.72rem; letter-spacing:0.2em;
+    color:#3fb96f; text-transform:uppercase;
+  }
+  h1{
+    font-size:1.9rem; margin:14px 0 6px; letter-spacing:0.02em;
+  }
+  .en{ font-family:Consolas,monospace; font-size:0.8rem; color:#8b93a3; letter-spacing:0.24em; }
+  p{ color:#8b93a3; font-size:0.94rem; margin:18px 0 0; }
+  .blocks{ display:flex; gap:7px; margin:26px 0 4px; }
+  .blocks i{
+    width:26px; height:26px; display:block; border-radius:2px;
+    animation:pop 1.6s ease-in-out infinite;
+  }
+  .blocks i:nth-child(1){ background:#f5a623; animation-delay:0s; }
+  .blocks i:nth-child(2){ background:#e5484d; animation-delay:.12s; }
+  .blocks i:nth-child(3){ background:#4cc9f0; animation-delay:.24s; }
+  .blocks i:nth-child(4){ background:#3fb96f; animation-delay:.36s; }
+  .blocks i:nth-child(5){ background:#a78bfa; animation-delay:.48s; }
+  .blocks i:nth-child(6){ background:#3a4354; animation-delay:.60s; }
+  @keyframes pop{ 0%,100%{ transform:translateY(0) } 50%{ transform:translateY(-9px) } }
+  .meta{
+    margin-top:28px; padding-top:20px; border-top:1px solid #272e3a;
+    font-family:Consolas,monospace; font-size:0.78rem; color:#5b6577;
+  }
+  .ok{ color:#3fb96f; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="tag">Deploy Pipeline · Verified</div>
+    <h1>部署链路已跑通</h1>
+    <div class="en">GITHUB PAGES / STATIC HOSTING</div>
+    <div class="blocks"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <p>
+      这是一个占位页面，用来验证从本地文件到公网链接的整条部署链路。
+      你现在能看到这段文字，说明链路完全正常：仓库已创建、文件已推送、
+      Pages 已启用、CDN 已分发。
+    </p>
+    <p>
+      下一步把方块射击游戏的正式文件替换到这个仓库，
+      链接地址保持不变，任何人打开都是最新版本。
+    </p>
+    <div class="meta">
+      status <span class="ok">200 OK</span> · served by GitHub Pages<br>
+      next &nbsp;&nbsp;&nbsp;replace with voxel shooter build
+    </div>
+  </div>
+</body>
+</html>
