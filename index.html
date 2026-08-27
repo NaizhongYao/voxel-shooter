@@ -3,68 +3,201 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>部署链路测试 · 肃清协议 3D</title>
+<title>肃清协议 3D · PROTOCOL: CLEARANCE</title>
 <style>
-  *{ box-sizing:border-box; margin:0; padding:0; }
-  body{
-    min-height:100vh; display:flex; align-items:center; justify-content:center;
-    background:#0a0d12; color:#e7eaf0;
-    font-family:'Segoe UI','Microsoft YaHei',sans-serif; line-height:1.7;
-    background-image:
-      repeating-linear-gradient(0deg, rgba(255,255,255,0.02) 0 1px, transparent 1px 32px),
-      repeating-linear-gradient(90deg, rgba(255,255,255,0.02) 0 1px, transparent 1px 32px);
+  :root{
+    --amber:#f5a623; --threat:#e5484d; --cyan:#4cc9f0;
+    --good:#3fb96f; --ink:#e7eaf0; --muted:#8b93a3;
+    --bg:#141c26; --panel:rgba(10,13,18,0.78); --rule:#272e3a;
+    --mono:'Consolas','JetBrains Mono',monospace;
+    --gap:8px;
   }
-  .card{
-    max-width:560px; padding:44px 40px; margin:24px;
-    background:#12161f; border:1px solid #272e3a; border-radius:10px;
-  }
-  .tag{
-    font-family:Consolas,monospace; font-size:0.72rem; letter-spacing:0.2em;
-    color:#3fb96f; text-transform:uppercase;
-  }
-  h1{
-    font-size:1.9rem; margin:14px 0 6px; letter-spacing:0.02em;
-  }
-  .en{ font-family:Consolas,monospace; font-size:0.8rem; color:#8b93a3; letter-spacing:0.24em; }
-  p{ color:#8b93a3; font-size:0.94rem; margin:18px 0 0; }
-  .blocks{ display:flex; gap:7px; margin:26px 0 4px; }
-  .blocks i{
-    width:26px; height:26px; display:block; border-radius:2px;
-    animation:pop 1.6s ease-in-out infinite;
-  }
-  .blocks i:nth-child(1){ background:#f5a623; animation-delay:0s; }
-  .blocks i:nth-child(2){ background:#e5484d; animation-delay:.12s; }
-  .blocks i:nth-child(3){ background:#4cc9f0; animation-delay:.24s; }
-  .blocks i:nth-child(4){ background:#3fb96f; animation-delay:.36s; }
-  .blocks i:nth-child(5){ background:#a78bfa; animation-delay:.48s; }
-  .blocks i:nth-child(6){ background:#3a4354; animation-delay:.60s; }
-  @keyframes pop{ 0%,100%{ transform:translateY(0) } 50%{ transform:translateY(-9px) } }
-  .meta{
-    margin-top:28px; padding-top:20px; border-top:1px solid #272e3a;
-    font-family:Consolas,monospace; font-size:0.78rem; color:#5b6577;
-  }
-  .ok{ color:#3fb96f; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:var(--bg); }
+  canvas#game{ display:block; width:100%; height:100%; cursor:crosshair; }
+  body.locked canvas#game{ cursor:none; }
+  #ui{ position:fixed; inset:0; pointer-events:none; font-family:var(--mono); color:var(--ink); }
+
+  /* 准星：--gap 随散布/受击动态变化 */
+  #crosshair{ position:absolute; left:50%; top:50%; width:2px; height:2px; }
+  #crosshair i{ position:absolute; background:var(--ink); opacity:.9; }
+  #crosshair i:nth-child(1){ left:0; top:calc(-1 * var(--gap) - 8px); width:2px; height:8px; }
+  #crosshair i:nth-child(2){ left:0; top:var(--gap); width:2px; height:8px; }
+  #crosshair i:nth-child(3){ top:0; left:calc(-1 * var(--gap) - 8px); height:2px; width:8px; }
+  #crosshair i:nth-child(4){ top:0; left:var(--gap); height:2px; width:8px; }
+  #crosshair.blocked i{ background:var(--threat); }
+
+  /* 左下：HP */
+  #status{ position:absolute; left:22px; bottom:22px; }
+  #hp-bar{ width:230px; height:15px; background:rgba(0,0,0,.6);
+    border:1px solid var(--rule); position:relative; }
+  #hp-fill{ position:absolute; inset:1px; width:100%;
+    background:linear-gradient(90deg,#e5484d,#f5a623); transition:width .18s; }
+  #hp-text{ font-size:.72rem; letter-spacing:.14em; color:var(--muted); margin-top:6px; }
+
+  /* 右下：弹药 */
+  #ammo-box{ position:absolute; right:24px; bottom:20px; text-align:right; }
+  #weapon-name{ font-size:.76rem; letter-spacing:.18em; color:var(--amber); }
+  #ammo-line{ display:flex; align-items:baseline; justify-content:flex-end; gap:6px; margin-top:2px; }
+  #ammo{ font-size:2.5rem; font-weight:700; line-height:1; }
+  #ammo-reserve{ font-size:1rem; color:var(--muted); }
+  #ammo-reserve::before{ content:'/ '; }
+  #reload{ display:none; width:150px; height:4px; background:rgba(0,0,0,.6);
+    border:1px solid var(--rule); margin-top:8px; margin-left:auto; }
+  #reload-bar{ height:100%; width:0%; background:var(--amber); }
+
+  /* 顶部中央：敌人计数 */
+  #objective{ position:absolute; left:50%; top:22px; transform:translateX(-50%);
+    text-align:center; background:var(--panel); border:1px solid var(--rule);
+    padding:8px 22px; }
+  #objective .lbl{ font-size:.62rem; letter-spacing:.28em; color:var(--muted); }
+  #enemy-count{ font-size:1.3rem; font-weight:700; color:var(--threat); letter-spacing:.08em; }
+
+  /* 右上：调试 */
+  #stats{ position:absolute; right:22px; top:22px; background:var(--panel);
+    border:1px solid var(--rule); padding:11px 13px; font-size:.7rem;
+    line-height:1.85; letter-spacing:.05em; min-width:186px; }
+  #stats .row{ display:flex; justify-content:space-between; gap:16px; }
+  #stats .k{ color:var(--muted); }  #stats .v{ color:var(--amber); }
+  #stats .v.on{ color:var(--good); } #stats .v.off{ color:var(--muted); }
+  #stats hr{ border:0; border-top:1px solid var(--rule); margin:7px 0; }
+  #boot{ color:var(--muted); font-size:.63rem; line-height:1.6; }
+
+  #title{ position:absolute; left:22px; top:22px; }
+  #title h1{ font-size:.84rem; letter-spacing:.24em; font-weight:700; color:var(--amber); }
+  #title p{ font-size:.64rem; color:var(--muted); letter-spacing:.1em; margin-top:3px; }
+
+  #keys{ position:absolute; left:50%; bottom:20px; transform:translateX(-50%);
+    display:flex; gap:13px; font-size:.63rem; color:var(--muted); letter-spacing:.06em;
+    background:var(--panel); border:1px solid var(--rule); padding:7px 15px; }
+  #keys b{ color:var(--ink); font-weight:600; }
+
+  /* 拾取提示 */
+  #prompt{ display:none; position:absolute; left:50%; top:58%; transform:translateX(-50%);
+    background:var(--panel); border:1px solid var(--amber); padding:7px 16px;
+    font-size:.74rem; letter-spacing:.1em; }
+  #prompt b{ color:var(--amber); }
+
+  /* toast */
+  #toast{ position:absolute; left:50%; top:14%; transform:translateX(-50%);
+    font-size:.82rem; letter-spacing:.12em; color:var(--amber);
+    background:var(--panel); border-left:3px solid var(--amber); padding:9px 18px;
+    opacity:0; transition:opacity .3s; }
+
+  /* 受击红晕 */
+  #damage-flash{ position:absolute; inset:0; opacity:0; pointer-events:none;
+    box-shadow:inset 0 0 180px 50px rgba(229,72,77,.85); transition:opacity .1s; }
+
+  /* 结算 */
+  #banner{ display:none; position:absolute; inset:0; align-items:center;
+    justify-content:center; flex-direction:column; gap:14px;
+    background:rgba(8,10,14,.86); }
+  #banner-title{ font-size:2.2rem; letter-spacing:.28em; font-weight:700; }
+  #banner-title.win{ color:var(--good); } #banner-title.lose{ color:var(--threat); }
+  #banner-body{ font-size:.86rem; color:var(--muted); letter-spacing:.08em;
+    text-align:center; line-height:2; }
+  #banner-body b{ color:var(--ink); }
+  #banner-body .grade{ color:var(--amber); font-size:1.5rem; }
+  .hint-key{ color:var(--muted); font-size:.72rem; }
+
+  #hint{ position:absolute; inset:0; display:flex; align-items:center;
+    justify-content:center; flex-direction:column; gap:10px;
+    background:rgba(10,13,18,.72); transition:opacity .25s; }
+  body.locked #hint{ opacity:0; }
+  #hint .big{ font-size:1.1rem; letter-spacing:.3em; color:var(--amber); }
+  #hint .small{ font-size:.72rem; color:var(--muted); letter-spacing:.12em; }
+
+  .vig{ position:absolute; inset:0; box-shadow:inset 0 0 220px 60px rgba(0,0,0,.85); }
+
+  #err{ display:none; position:absolute; left:22px; top:92px; max-width:70vw;
+    background:rgba(120,20,24,.92); border:1px solid var(--threat);
+    color:#ffe; padding:12px 14px; font-size:.68rem; line-height:1.6;
+    white-space:pre-wrap; max-height:48vh; overflow:auto; }
 </style>
 </head>
 <body>
-  <div class="card">
-    <div class="tag">Deploy Pipeline · Verified</div>
-    <h1>部署链路已跑通</h1>
-    <div class="en">GITHUB PAGES / STATIC HOSTING</div>
-    <div class="blocks"><i></i><i></i><i></i><i></i><i></i><i></i></div>
-    <p>
-      这是一个占位页面，用来验证从本地文件到公网链接的整条部署链路。
-      你现在能看到这段文字，说明链路完全正常：仓库已创建、文件已推送、
-      Pages 已启用、CDN 已分发。
-    </p>
-    <p>
-      下一步把方块射击游戏的正式文件替换到这个仓库，
-      链接地址保持不变，任何人打开都是最新版本。
-    </p>
-    <div class="meta">
-      status <span class="ok">200 OK</span> · served by GitHub Pages<br>
-      next &nbsp;&nbsp;&nbsp;replace with voxel shooter build
-    </div>
+<canvas id="game"></canvas>
+
+<div id="ui">
+  <div class="vig"></div>
+  <div id="damage-flash"></div>
+
+  <div id="title">
+    <h1>肃清协议 3D</h1>
+    <p>PROTOCOL : CLEARANCE — VOXEL EDITION</p>
   </div>
+
+  <div id="objective">
+    <div class="lbl">剩余敌人</div>
+    <div id="enemy-count">12 / 12</div>
+  </div>
+
+  <div id="stats">
+    <div class="row"><span class="k">FPS</span><span class="v" id="fps">–</span></div>
+    <div class="row"><span class="k">POS</span><span class="v" id="pos">–</span></div>
+    <div class="row"><span class="k">STANCE</span><span class="v" id="stance">NORMAL</span></div>
+    <div class="row"><span class="k">FLASHLIGHT</span><span class="v on" id="light">ON</span></div>
+    <div class="row"><span class="k">SHOTS</span><span class="v" id="dbg-shots">0</span></div>
+    <div class="row"><span class="k">HITS</span><span class="v" id="dbg-hits">0</span></div>
+    <div class="row"><span class="k">FIRE</span><span class="v" id="dbg-fire">–</span></div>
+    <hr><div id="boot">building…</div>
+  </div>
+
+  <div id="crosshair"><i></i><i></i><i></i><i></i></div>
+
+  <div id="status">
+    <div id="hp-bar"><div id="hp-fill"></div></div>
+    <div id="hp-text">60 / 60</div>
+  </div>
+
+  <div id="ammo-box">
+    <div id="weapon-name">M19</div>
+    <div id="ammo-line"><span id="ammo">12</span><span id="ammo-reserve">∞</span></div>
+    <div id="reload"><div id="reload-bar"></div></div>
+  </div>
+
+  <div id="prompt"></div>
+  <div id="toast"></div>
+
+  <div id="keys">
+    <span><b>WASD</b> 移动</span>
+    <span><b>左键</b> 射击</span>
+    <span><b>右键</b> 瞄准</span>
+    <span><b>R</b> 换弹</span>
+    <span><b>G</b> 拾取</span>
+    <span><b>1/2</b> 换枪</span>
+    <span><b>Ctrl</b> 慢走</span>
+    <span><b>Shift</b> 蹲</span>
+    <span><b>Q/E</b> 倾斜</span>
+    <span><b>F</b> 手电</span>
+  </div>
+
+  <div id="banner">
+    <div id="banner-title"></div>
+    <div id="banner-body"></div>
+  </div>
+
+  <div id="hint">
+    <div class="big">点击进入</div>
+    <div class="small">清掉全部 12 个敌人 · 返回庭院撤离 · ESC 退出</div>
+  </div>
+
+  <pre id="err"></pre>
+</div>
+
+<script>
+  const errBox = document.getElementById('err');
+  function showErr(msg) {
+    errBox.style.display = 'block';
+    errBox.textContent += msg + '\n';
+  }
+  window.addEventListener('error', (e) => showErr(`${e.message}\n  ${e.filename}:${e.lineno}`));
+  window.addEventListener('unhandledrejection', (e) => showErr(`Promise: ${e.reason}`));
+</script>
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.169.0/build/three.module.js" } }
+</script>
+<script type="module" src="./src/main.js"></script>
 </body>
 </html>
