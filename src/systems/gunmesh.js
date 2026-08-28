@@ -73,6 +73,18 @@ export function buildGunModel(weaponId = 'pistol') {
   return root;
 }
 
+export function buildMedkitModel() {
+  const root = new THREE.Group();
+  root.name = 'medkit';
+  const white = 0xf2f4f0;
+  const red = PALETTE.good;
+  box(root, { x: 0.38, y: 0.22, z: 0.28 }, white, { x: 0, y: 0, z: 0 });
+  box(root, { x: 0.22, y: 0.08, z: 0.08 }, red, { x: 0, y: 0.14, z: 0 });
+  box(root, { x: 0.08, y: 0.22, z: 0.08 }, red, { x: 0, y: 0.14, z: 0 });
+  box(root, { x: 0.40, y: 0.04, z: 0.10 }, 0x2a4a34, { x: 0, y: -0.12, z: 0 });
+  return root;
+}
+
 export function muzzleLocalZ(weaponId = 'pistol') {
   if (weaponId === 'dmr') return -1.12;
   if (weaponId === 'shotgun') return -1.0;

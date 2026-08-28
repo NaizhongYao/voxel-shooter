@@ -137,8 +137,9 @@
   #brief{ position:absolute; inset:0; display:flex; align-items:center;
     justify-content:center; background:rgba(8,10,14,.94); overflow-y:auto;
     pointer-events:auto; }
-  #brief-inner{ width:min(760px,92vw); padding:22px 26px 18px;
-    border:1px solid var(--rule); background:rgba(12,16,22,.96); }
+  #brief-inner{ width:min(820px,94vw); padding:22px 26px 18px;
+    border:1px solid var(--rule); background:linear-gradient(180deg,#121820,#0c1016);
+    box-shadow:0 24px 80px rgba(0,0,0,.45); }
   #brief h2{ font-size:1.0rem; letter-spacing:.3em; color:var(--amber);
     font-weight:700; }
   #brief .sub{ font-size:.64rem; letter-spacing:.22em; color:var(--muted);
@@ -159,11 +160,14 @@
   .goal3 .g{ border:1px solid var(--rule); padding:12px 10px; text-align:center; }
   .goal3 .n{ font-size:1.4rem; color:var(--amber); font-weight:700; }
   .goal3 .l{ font-size:.62rem; color:var(--muted); letter-spacing:.12em; margin-top:4px; }
-  #mini-map{ width:100%; height:280px; background:#0b0f14; border:1px solid var(--rule); }
+  #mini-map{ width:100%; height:340px; background:#0a0e14; border:1px solid #2c3644; }
+  .map-wrap{ position:relative; }
+  .map-legend{ display:flex; gap:14px; flex-wrap:wrap; margin-top:8px; font-size:.62rem; color:var(--muted); letter-spacing:.08em; }
+  .map-legend b{ width:10px; height:10px; display:inline-block; margin-right:5px; vertical-align:middle; }
   .map-cap{ font-size:.68rem; color:var(--muted); margin-top:8px; line-height:1.7; }
   .loadout-grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-  .lcard{ border:1px solid var(--rule); padding:12px; cursor:pointer; background:rgba(0,0,0,.28); }
-  .lcard.on{ border-color:var(--amber); background:rgba(245,166,35,.1); }
+  .lcard{ border:1px solid var(--rule); padding:14px 12px; cursor:pointer; background:rgba(0,0,0,.28); }
+  .lcard.on{ border-color:var(--amber); background:rgba(245,166,35,.12); box-shadow:inset 0 0 0 1px rgba(245,166,35,.25); }
   .lcard .t{ font-size:.82rem; color:var(--amber); letter-spacing:.12em; }
   .lcard .d{ font-size:.66rem; color:var(--muted); margin-top:6px; line-height:1.6; }
   .keys4{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:12px; }
@@ -325,22 +329,42 @@
       <hr>
 
       <div class="bpage on" data-page="0">
-        <div class="bsec"><div class="h">任务</div></div>
+        <div class="bsec"><div class="h">01 任务</div></div>
         <div class="goal3">
           <div class="g"><div class="n" id="brief-count">12</div><div class="l">清除目标</div></div>
           <div class="g"><div class="n">庭院</div><div class="l">完成后撤离</div></div>
           <div class="g"><div class="n">无存档</div><div class="l">阵亡即失败</div></div>
         </div>
+        <p class="map-cap">进去，清掉全部敌人，从南侧庭院出来。没有检查点。</p>
       </div>
 
       <div class="bpage" data-page="1">
-        <div class="bsec"><div class="h">地图</div></div>
-        <svg id="mini-map" viewBox="0 0 64 64" aria-label="关卡俯视简图"></svg>
-        <p class="map-cap">南门正对你。北墙是后门，东西各有侧门。室内全黑，走廊要切角。悬停房间看名字。</p>
+        <div class="bsec"><div class="h">02 难度</div></div>
+        <div id="diffs"></div>
+        <div class="keys4">
+          <span><b>F</b>手电</span>
+          <span><b>Ctrl</b>慢走</span>
+          <span><b>Q/Z</b>探头</span>
+          <span><b>3</b>手雷</span>
+        </div>
       </div>
 
       <div class="bpage" data-page="2">
-        <div class="bsec"><div class="h">装备</div></div>
+        <div class="bsec"><div class="h">03 地图</div></div>
+        <div class="map-wrap">
+          <svg id="mini-map" viewBox="0 0 64 70" aria-label="作战地图"></svg>
+        </div>
+        <div class="map-legend">
+          <span><b style="background:#3fb96f"></b>你 / 南门</span>
+          <span><b style="background:#4cc9f0"></b>后门 / 侧门</span>
+          <span><b style="background:#1a222c"></b>墙体</span>
+          <span><b style="background:#2d3a4a"></b>房间</span>
+        </div>
+        <p class="map-cap" id="map-cap">南门正对你。北墙是后门，东西各有侧门。悬停房间看名字。</p>
+      </div>
+
+      <div class="bpage" data-page="3">
+        <div class="bsec"><div class="h">04 武器</div></div>
         <p class="map-cap" style="margin-bottom:10px">手枪是保底武器。手雷数量随难度变化。</p>
         <div class="loadout-grid">
           <div class="lcard on" data-pistol="pistol">
@@ -359,17 +383,6 @@
             <div class="t">高爆 ×½</div>
             <div class="d">数量少 · 杀伤强 · 会惊动整层</div>
           </div>
-        </div>
-      </div>
-
-      <div class="bpage" data-page="3">
-        <div class="bsec"><div class="h">准备</div></div>
-        <div id="diffs"></div>
-        <div class="keys4">
-          <span><b>F</b>手电</span>
-          <span><b>Ctrl</b>慢走</span>
-          <span><b>Q/Z</b>探头</span>
-          <span><b>3</b>手雷</span>
         </div>
       </div>
 

@@ -169,18 +169,12 @@ export class Enemy {
     this.rig.setGun(spec.weapon);
 
     this.isAmbusher = this.archetype === ARCHETYPE.AMBUSHER;
-    this.crouched = this.isAmbusher;      // 只有伏击者初始是蹲的
-    this.crouchAmt = this.crouched ? 1 : 0;
-    this.height = this.crouched ? PLAYER.crouchHeight : PLAYER.height;
+    // 伏击者仍守点，但站着、开手电。蹲着关灯会让人在黑暗里几乎看不见、也打不中。
+    this.crouched = false;
+    this.crouchAmt = 0;
+    this.height = PLAYER.height;
     this.dead = false;
-
-    /**
-     * 敌人手电。伏击者默认关灯 —— 他们的战术就是藏在暗处，
-     * 亮着灯的伏击等于自己举手示意「我在这」，玩法上说不通。
-     * 其余敌人常亮，玩家因此能靠「远处扫过来的光柱」判断有人。
-     * 实际光源由 EnemyFlashlights 池按距离分配（见 systems/flashlight.js）。
-     */
-    this.flashlightOn = !this.isAmbusher;
+    this.flashlightOn = true;
 
     // 出生点脱困：万一关卡布置把敌人放进了墙里，就近推出来。
     // 布置数据是手写的，出错概率永远不为零；卡在墙里的敌人打不着也走不动，
@@ -325,11 +319,16 @@ export class Enemy {
    */
   hitTest(ox, oy, oz, dx, dy, dz, maxDist) {
     if (this.dead) return null;
-    const s = this.height / PLAYER.height;
+    /**
+     * 蹲伏只把命中盒压到约 1.15 高，不要按 1.0/1.8 等比缩到 0.55。
+     * 等比缩放会让伏击者的头胸都低于站立准星，玩家瞄准人形中心也打不中，
+     * 看起来就像「人在那儿但打不到」。
+     */
+    const s = Math.max(0.64, this.height / PLAYER.height);
     const zones = [
-      { name: 'head',  y0: 1.48 * s, y1: 1.98 * s, half: 0.26, mult: HITBOX_MULT.head },
-      { name: 'torso', y0: 0.68 * s, y1: 1.48 * s, half: 0.32, mult: HITBOX_MULT.torso },
-      { name: 'limb',  y0: 0.0,      y1: 0.68 * s, half: 0.30, mult: HITBOX_MULT.limb },
+      { name: 'head',  y0: 1.48 * s, y1: 1.98 * s, half: 0.28, mult: HITBOX_MULT.head },
+      { name: 'torso', y0: 0.55 * s, y1: 1.48 * s, half: 0.36, mult: HITBOX_MULT.torso },
+      { name: 'limb',  y0: 0.0,      y1: 0.68 * s, half: 0.32, mult: HITBOX_MULT.limb },
     ];
 
     let best = null;

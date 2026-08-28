@@ -76,7 +76,7 @@ export const ENEMY_SPAWNS = [
   // 巡逻者 tier 2（困难/专家追加），伏击者 tier 1（三档都会遇到）。
   {
     x: 11.5, y: Y1, z: 38.5, yaw: 0,
-    archetype: ARCHETYPE.PATROLLER, weapon: 'smg', tier: 2,
+    archetype: ARCHETYPE.PATROLLER, weapon: 'smg', tier: 1,
     patrol: [[11.5, 38.5], [21.5, 38.5], [21.5, 45.5], [11.5, 45.5]],
   },
   { x: 20.5, y: Y1, z: 40.5, yaw: Math.PI / 2, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun', tier: 1 },
@@ -121,7 +121,7 @@ export const ENEMY_SPAWNS = [
   // 伏击者 tier 1（简单难度就要教玩家「仓库黑暗角落也要照」）。
   {
     x: 27.5, y: Y1, z: 19.5, yaw: 0,
-    archetype: ARCHETYPE.PATROLLER, weapon: 'ar', tier: 2, armored: true,
+    archetype: ARCHETYPE.PATROLLER, weapon: 'ar', tier: 1, armored: true,
     patrol: [[27.5, 19.5], [42.5, 19.5], [42.5, 22.5], [27.5, 22.5]],
   },
   { x: 40.5, y: Y1, z: 17.5, yaw: Math.PI / 2, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun', tier: 1 },
@@ -138,6 +138,23 @@ export const ENEMY_SPAWNS = [
     archetype: ARCHETYPE.PATROLLER, weapon: 'pistol', tier: 2,
     patrol: [[46.5, 8.5], [52.5, 8.5], [52.5, 14.5], [46.5, 14.5]],
   },
+
+  // ── 困难/专家追加：东储、西储、南过道东段，避免「扫完南翼就找不到人」──
+  {
+    x: 50.5, y: Y1, z: 20.5, yaw: Math.PI,
+    archetype: ARCHETYPE.PATROLLER, weapon: 'smg', tier: 1,
+    patrol: [[48.5, 18.5], [53.5, 18.5], [53.5, 23.5], [48.5, 23.5]],
+  },
+  {
+    x: 12.5, y: Y1, z: 20.5, yaw: 0,
+    archetype: ARCHETYPE.PATROLLER, weapon: 'ar', tier: 2,
+    patrol: [[10.5, 18.5], [17.5, 18.5], [17.5, 23.5], [10.5, 23.5]],
+  },
+  {
+    x: 48.5, y: Y1, z: 34.5, yaw: Math.PI / 2,
+    archetype: ARCHETYPE.PATROLLER, weapon: 'smg', tier: 2,
+    patrol: [[42.5, 33.5], [53.5, 33.5], [53.5, 35.5], [42.5, 35.5]],
+  },
 ];
 
 /**
@@ -148,7 +165,7 @@ export const ENEMY_SPAWNS = [
  *   困难（tier≤2，10人）：伏击者3 · 巡逻者7 · 武装2 · 覆盖 8 个房间
  *   专家（tier≤3，12人）：伏击者4 · 巡逻者8 · 武装3 · 覆盖 8 个房间
  */
-export const ENEMY_COUNT_BY_TIER = { 1: 7, 2: 10, 3: 12 };
+export const ENEMY_COUNT_BY_TIER = { 1: 10, 2: 13, 3: 15 };
 
 /** 医疗包：全关仅 3 个，固定位置，敌人不掉落 */
 export const MEDKIT_SPAWNS = [

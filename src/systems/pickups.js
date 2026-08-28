@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { PALETTE, PLAYER } from '../config.js';
 import { D } from '../difficulty.js';
 import { WEAPONS } from './weapons.js';
-import { buildGunModel } from './gunmesh.js';
+import { buildGunModel, buildMedkitModel } from './gunmesh.js';
 
 /**
  * 掉落物：缓慢自转 + 上下浮动的 0.4 vox 小方块。
@@ -32,6 +32,8 @@ export class Pickup {
     if (kind === KIND.WEAPON) {
       this.mesh = buildGunModel(payload.weapon || 'pistol');
       this.mesh.rotation.x = 0.15;
+    } else if (kind === KIND.MEDKIT) {
+      this.mesh = buildMedkitModel();
     } else {
       this.mesh = new THREE.Mesh(BOX, new THREE.MeshLambertMaterial({ color }));
     }

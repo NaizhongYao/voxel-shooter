@@ -134,9 +134,8 @@ function saveLoadoutChoice(choice) {
 const loadoutChoice = readLoadoutChoice();
 const loadout = new Loadout({ pistolId: loadoutChoice.pistol });
 
-// 敌人数量按难度分层：简单只生成 tier<=1（7人），困难 tier<=2（10人），
-// 专家全部 12 人。tier 越高只是「追加」，永不移除 tier 1 的敌人，
-// 所以专家难度下永远是完整池子。
+// 敌人数量按难度分层：简单 tier<=1，困难 tier<=2，专家全部。
+// 人数以 ENEMY_COUNT_BY_TIER 为准。
 const activeSpawns = ENEMY_SPAWNS.filter((s) => s.tier <= D().enemyTier);
 const enemies = activeSpawns.map((s) => {
   const e = new Enemy(world, s);
@@ -234,29 +233,39 @@ function drawMiniMap() {
     corridor: '走廊', southHall: '南过道', living: '客厅', foyer: '门厅', kitchen: '厨房',
   };
   const fills = {
-    foyer: '#f5a623', warehouse: '#3a5a78', corridor: '#2b3240',
-    living: '#3a4354', kitchen: '#3a4354', bedroom: '#4a3f52', study: '#4a3f52',
+    foyer: '#3d4a3a', warehouse: '#2b3d4d', corridor: '#24303c',
+    southHall: '#24303c', living: '#3a3344', kitchen: '#3a3a32',
+    bedroom: '#3a3040', study: '#3a3040', westStore: '#32363c', eastStore: '#32363c',
+    northHall: '#2c343c',
   };
-  let html = `<rect x="0" y="48" width="64" height="16" fill="#141c26"/>`;
-  html += `<text x="32" y="61" text-anchor="middle" fill="#9fb4cc" font-size="3.2">你 · 南庭院</text>`;
+  const flip = (z) => 64 - z;
+  const wall = BUILDING;
+  let html = `<rect x="0" y="0" width="64" height="70" fill="#0a0e14"/>`;
+  html += `<rect x="1" y="${flip(63)}" width="62" height="14" fill="#151c24" stroke="#2a3440" stroke-width="0.3"/>`;
+  html += `<rect x="${wall.x0 - 2}" y="${flip(wall.z1 + 2)}" width="${wall.x1 - wall.x0 + 4}" height="${wall.z1 - wall.z0 + 4}" fill="#1a222c"/>`;
   for (const [id, r] of Object.entries(ROOMS)) {
-    html += `<rect data-room="${names[id]}" x="${r.x0}" y="${r.z0}" width="${r.x1 - r.x0}" height="${r.z1 - r.z0}" fill="${fills[id] || '#232b36'}" stroke="#8b93a3" stroke-width="0.25" opacity="0.92"/>`;
+    const y = flip(r.z1);
+    const h = r.z1 - r.z0;
+    const cx = (r.x0 + r.x1) / 2;
+    const cy = y + h / 2 + 0.6;
+    html += `<rect data-room="${names[id]}" x="${r.x0}" y="${y}" width="${r.x1 - r.x0}" height="${h}" fill="${fills[id] || '#2d3a4a'}" stroke="#5a6a78" stroke-width="0.2"/>`;
+    html += `<text x="${cx}" y="${cy}" text-anchor="middle" fill="#c5d0da" font-size="${id === 'corridor' || id === 'southHall' || id === 'northHall' ? 2.1 : 2.4}" font-family="Consolas,monospace">${names[id]}</text>`;
   }
-  html += `<rect x="31" y="46" width="2" height="2" fill="#3fb96f"/>`;
-  html += `<rect x="31" y="5" width="2" height="2" fill="#4cc9f0"/>`;
-  html += `<rect x="5" y="20" width="2" height="1" fill="#4cc9f0"/>`;
-  html += `<rect x="56" y="20" width="2" height="1" fill="#4cc9f0"/>`;
-  html += `<text x="32" y="4.2" text-anchor="middle" fill="#4cc9f0" font-size="2.4">后门</text>`;
-  html += `<text x="3.2" y="19.6" fill="#4cc9f0" font-size="2.2">西</text>`;
-  html += `<text x="58.5" y="19.6" fill="#4cc9f0" font-size="2.2">东</text>`;
+  html += `<rect x="31" y="${flip(48)}" width="2" height="2" fill="#3fb96f"/>`;
+  html += `<rect x="31" y="${flip(7)}" width="2" height="2" fill="#4cc9f0"/>`;
+  html += `<rect x="5" y="${flip(21)}" width="2" height="2" fill="#4cc9f0"/>`;
+  html += `<rect x="56" y="${flip(21)}" width="2" height="2" fill="#4cc9f0"/>`;
+  html += `<circle cx="32.5" cy="${flip(58.5)}" r="1.4" fill="#f5a623" stroke="#fff" stroke-width="0.25"/>`;
+  html += `<text x="32.5" y="${flip(52)}" text-anchor="middle" fill="#f5a623" font-size="2.3">你</text>`;
+  html += `<text x="32" y="${flip(3)}" text-anchor="middle" fill="#4cc9f0" font-size="2.2">N 后门</text>`;
+  html += `<text x="32" y="68.5" text-anchor="middle" fill="#8b93a3" font-size="2.1">S 南庭院</text>`;
   svg.innerHTML = html;
   svg.querySelectorAll('rect[data-room]').forEach((el) => {
     el.addEventListener('mouseenter', () => {
-      const cap = document.querySelector('.map-cap');
-      if (cap) cap.textContent = el.getAttribute('data-room');
+      const cap = document.getElementById('map-cap');
+      if (cap) cap.textContent = el.getAttribute('data-room') + ' · 南门正对你，北墙是后门';
     });
   });
-  void BUILDING;
 }
 drawMiniMap();
 
@@ -798,7 +807,8 @@ function frame(nowMs) {
       hud.reload.style.display = 'none';
     }
   }
-  hud.enemies.textContent = `${game.totalEnemies - game.killed} / ${game.totalEnemies}`;
+  const alive = enemies.filter((e) => !e.dead).length;
+  hud.enemies.textContent = `${alive} / ${game.totalEnemies}`;
   hud.dbgShots.textContent = String(combat.stats.shots);
   hud.dbgHits.textContent = String(combat.stats.hits);
   hud.dbgFire.textContent = fireDebug;
