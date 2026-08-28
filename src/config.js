@@ -239,10 +239,13 @@ export const PLAYER = {
  * ARMOR_ABSORB：武装敌人的护甲吸收比例，与玩家侧 PLAYER.armorAbsorb
  * 同源同理（护甲先扣、生命后扣，留一点渗透伤害保证有反馈）。
  * ARMOR_MAX：武装敌人的护甲值，约等于挨 1–2 枪 AR 才能击穿。
+ * ARMORED_HP_MULT：武装敌人的生命倍率。×2 让「爆头」不再是一发的事：
+ * 护甲破掉之后，AR 还需要两枪爆头才放倒 —— 重甲目标必须持续集火。
  */
 export const NOISE_SPIKE_THRESHOLD = 38;
 export const ARMOR_ABSORB = 0.85;
 export const ARMOR_MAX = 40;
+export const ARMORED_HP_MULT = 2;
 
 export const GRENADES = {
   he: {

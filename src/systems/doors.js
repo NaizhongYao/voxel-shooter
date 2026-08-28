@@ -3,47 +3,46 @@ import { PALETTE } from '../config.js';
 import { BLOCK } from '../voxel/blocks.js';
 
 /**
- * 门：1 格宽 × 2 格高 × 0.14 厚的琥珀色扁方块，绕一条竖边旋转 90°。
+ * 门：一格门洞里的**双开门** —— 两片 0.5 格宽 × 2 格高 × 0.14 厚的琥珀色
+ * 扁方块，铰链分别在门洞的两条侧边，开门时从中间向两侧各转 90°。
  * 没有铰链模型、没有把手、没有蒙皮（GDD 11 章）。
  *
- * 关闭时挡光挡视线挡子弹（往体素网格里写实心方块），开启时移除。
+ * 关闭时挡光挡视线挡子弹（往体素网格里写 BLOCK.DOOR），开启时移除。
  * 门的遮挡关系和墙完全一致，AI 视线判定与阴影贴图都自动正确。
  *
- * ══ 之前「门把玩家堵在门口」的两个根因，都在这里修掉 ══
+ * ══ 关着的门必须看起来像门 ══
  *
- * 1. 门板尺寸的朝向判断反了。
- *    旧代码看「左右两侧是否是墙」(solidX)，是则把门板做成 x 薄 z 宽。
- *    但左右是墙 ⇒ 墙沿 x 延伸 ⇒ 门洞沿 z 贯穿 ⇒ 门板必须是 x 宽 z 薄。
- *    做反的门板正好横插在通道里，转到 90° 依旧糊在门洞中间。
- *    现在直接用关卡 carveDoor 时记录的 `through`（门洞贯穿方向），不再猜。
+ * 以前关门是往格子里写 BLOCK.WALL —— 那是个整格实心立方体，正好把薄门板
+ * 完全包在里面，玩家看到的是一堵灰墙，既看不出是门、也不知道能按 E。
+ * 现在写的是 BLOCK.DOOR（solid + opaque 但 render:false），
+ * 挡住的职责归体素，外观的职责归门板网格，互不遮蔽。
  *
- * 2. 门板绕格子中心转，开门后仍在通道内。
- *    现在铰链放在门洞格的一条竖边上，开门时门板整体旋出通道、
- *    立到房间一侧 —— 门洞恢复完整净空，这也是真实的门的行为。
- *
- * ══ 铰链几何（推导，别改数值前先看这里）══
+ * ══ 双开门的几何（改数值前先看这里）══
  *
  * three.js 绕 +y 旋转 θ：x' = x·cosθ + z·sinθ，z' = −x·sinθ + z·cosθ
  *
- * · through='z'（门洞沿 z 贯穿，墙沿 x 延伸，房间在 z−1 侧）
- *     铰链 = 格子的 (x=gx, z=gz) 竖边；门板局部偏移 (+0.5, 0)，沿 x 展开。
- *     θ=+90° → 局部 (0.5,0) 映射到 (0, −0.5)：门板转到 z−1 侧，沿 z 展开。
- *     ⇒ openSign = +1
+ * 门洞格是 (gx, gz)，占 1×1。双开门把这一格从中线劈成两半：
  *
- * · through='x'（门洞沿 x 贯穿，墙沿 z 延伸，房间在 x−1 侧）
- *     铰链 = 格子的 (x=gx, z=gz) 竖边；门板局部偏移 (0, +0.5)，沿 z 展开。
- *     θ=−90° → 局部 (0,0.5) 映射到 (−0.5, 0)：门板转到 x−1 侧，沿 x 展开。
- *     ⇒ openSign = −1
+ * · through='z'（门洞沿 z 贯穿，墙沿 x 延伸）→ 门板沿 x 展开、z 方向薄
+ *     左扇：铰链在 x=gx 边，局部中心 (+0.25, 0)，θ 从 0 → −90°
+ *     右扇：铰链在 x=gx+1 边，局部中心 (−0.25, 0)，θ 从 0 → +90°
+ *     两扇各自旋到与墙面垂直（贴在门洞两侧的墙垛上），通道完全净空。
  *
- * 两种情况的共同前提：门板旋出的那一格必须是房间净空。
- * 关卡的 carveDoor 调用全部遵守这条，由 logic.test.mjs 的
- * 「门完全敞开后门洞净空」用例守着。
+ * · through='x'（门洞沿 x 贯穿，墙沿 z 延伸）→ 门板沿 z 展开、x 方向薄
+ *     左扇：铰链在 z=gz 边，局部中心 (0, +0.25)，θ 从 0 → +90°
+ *     右扇：铰链在 z=gz+1 边，局部中心 (0, −0.25)，θ 从 0 → −90°
+ *
+ * 双开门的关键好处：门板旋出后落在**门洞自身的两侧**（也就是墙厚方向的
+ * 侧壁上），不再需要「铰链侧那一格必须是房间净空」这个前提 ——
+ * 单开门时代那条约束正是「门打不开 / 门堵住通道」的来源。
  */
 
 const DOOR_THICK = 0.14;
 const OPEN_ANGLE = Math.PI / 2;
 const OPEN_TIME = 0.35;          // 推门耗时
 const DOOR_H = 2;
+/** 每扇门板的宽度：一格门洞对半分 */
+const LEAF_W = 0.5;
 /** 门板沿自身薄轴的微小内缩，避免与墙面共面导致 z-fighting */
 const FACE_INSET = DOOR_THICK / 2 + 0.01;
 
@@ -64,31 +63,42 @@ export class Door {
     // 门洞沿 z 贯穿 ⇒ 墙沿 x 延伸 ⇒ 门板宽度在 x 轴上
     const widthOnX = this.through === 'z';
     const geo = widthOnX
-      ? new THREE.BoxGeometry(1, DOOR_H, DOOR_THICK)
-      : new THREE.BoxGeometry(DOOR_THICK, DOOR_H, 1);
+      ? new THREE.BoxGeometry(LEAF_W, DOOR_H, DOOR_THICK)
+      : new THREE.BoxGeometry(DOOR_THICK, DOOR_H, LEAF_W);
 
     // 双面可见：开到一半时从背面看不能变成空洞
     const mat = new THREE.MeshLambertMaterial({
       color: PALETTE.amber, side: THREE.DoubleSide,
     });
-    this.mesh = new THREE.Mesh(geo, mat);
-    this.mesh.castShadow = true;
-    this.mesh.receiveShadow = true;
 
-    // 铰链固定在门洞格的 (gx, gz) 竖边上（见文件头的推导）
-    this.pivot = new THREE.Group();
-    this.pivot.position.set(this.gx, this.gy, this.gz);
+    /**
+     * 双开门：两个铰链组，分别钉在门洞的两条侧边，向相反方向旋转。
+     * leaves[i] = { pivot, mesh, sign }，sign 决定该扇的旋转方向。
+     */
+    this.leaves = [];
+    const mkLeaf = (pivotX, pivotZ, localX, localZ, sign) => {
+      const pivot = new THREE.Group();
+      pivot.position.set(pivotX, this.gy, pivotZ);
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.position.set(localX, DOOR_H / 2, localZ);
+      pivot.add(mesh);
+      scene.add(pivot);
+      this.leaves.push({ pivot, mesh, sign });
+    };
+
     if (widthOnX) {
-      this.mesh.position.set(0.5, DOOR_H / 2, FACE_INSET);
-      this.openSign = 1;
+      // 门板沿 x 展开、z 薄：铰链在 x=gx 与 x=gx+1 两条竖边
+      mkLeaf(this.gx,     this.gz, LEAF_W / 2,  FACE_INSET, -1);
+      mkLeaf(this.gx + 1, this.gz, -LEAF_W / 2, FACE_INSET,  1);
     } else {
-      this.mesh.position.set(FACE_INSET, DOOR_H / 2, 0.5);
-      this.openSign = -1;
+      // 门板沿 z 展开、x 薄：铰链在 z=gz 与 z=gz+1 两条竖边
+      mkLeaf(this.gx, this.gz,     FACE_INSET,  LEAF_W / 2,  1);
+      mkLeaf(this.gx, this.gz + 1, FACE_INSET, -LEAF_W / 2, -1);
     }
-    this.pivot.add(this.mesh);
-    scene.add(this.pivot);
 
-    // 关门状态：往网格里写实心方块，让它像墙一样挡住一切
+    // 关门状态：往网格里写 BLOCK.DOOR，挡住一切但不画整格立方体
     this.applyBlocking(true);
   }
 
@@ -110,7 +120,7 @@ export class Door {
    */
   applyBlocking(blocking) {
     for (let y = this.gy; y < this.gy + DOOR_H; y++) {
-      this.world.set(this.gx, y, this.gz, blocking ? BLOCK.WALL : BLOCK.AIR);
+      this.world.set(this.gx, y, this.gz, blocking ? BLOCK.DOOR : BLOCK.AIR);
     }
     // 门框标记留在底格（开门后恢复，供 AI 寻路识别通道）
     if (!blocking) this.world.set(this.gx, this.gy, this.gz, BLOCK.DOORFRAME);
@@ -160,17 +170,27 @@ export class Door {
     return this.open;
   }
 
+  /** 把两扇门板转到当前 anim 对应的角度 */
+  applyRotation() {
+    for (const leaf of this.leaves) {
+      leaf.pivot.rotation.y = this.anim * OPEN_ANGLE * leaf.sign;
+    }
+  }
+
   /** 跳过动画直接到位，供初始化使用 */
   snap() {
     this.anim = this.open ? 1 : 0;
-    this.pivot.rotation.y = this.anim * OPEN_ANGLE * this.openSign;
+    this.applyRotation();
   }
 
-  /** 门板完全敞开后所占的格坐标（该格必须是房间净空） */
+  /**
+   * 门板完全敞开后所占的格坐标。
+   *
+   * 双开门的两扇都落在门洞自身的侧壁上（墙厚方向），不侵入任何房间格，
+   * 所以这里返回门洞格本身 —— 保留这个方法是为了兼容既有测试与调用方。
+   */
   swingCell() {
-    return this.through === 'z'
-      ? { x: this.gx, z: this.gz - 1 }
-      : { x: this.gx - 1, z: this.gz };
+    return { x: this.gx, z: this.gz };
   }
 
   update(dt) {
@@ -179,7 +199,7 @@ export class Door {
     const step = dt / OPEN_TIME;
     this.anim += Math.sign(target - this.anim) * step;
     this.anim = Math.max(0, Math.min(1, this.anim));
-    this.pivot.rotation.y = this.anim * OPEN_ANGLE * this.openSign;
+    this.applyRotation();
   }
 }
 

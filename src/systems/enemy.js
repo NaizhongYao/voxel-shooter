@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PALETTE, PLAYER, LIGHT, ARMOR_ABSORB, ARMOR_MAX } from '../config.js';
+import { PALETTE, PLAYER, LIGHT, ARMOR_ABSORB, ARMOR_MAX, ARMORED_HP_MULT } from '../config.js';
 import { D } from '../difficulty.js';
 import { BlockyRig } from '../player/rig.js';
 import { WEAPONS, WeaponInstance, HITBOX_MULT } from './weapons.js';
@@ -113,16 +113,19 @@ export class Enemy {
     this.patrol = spec.patrol ?? null;
     this.patrolIdx = 0;
 
-    this.hpMax = D().enemyHp;            // 简单 50 / 困难 60 / 专家 70
-    this.hp = this.hpMax;
     /**
-     * 武装敌人（spec.armored）：护甲先扣、生命后扣，与玩家侧
-     * PLAYER.armorAbsorb 同一套公式（见 takeDamage）。护甲值不随难度
-     * 缩放——它是关卡里固定的战术要素，不是难度杠杆，缩放交给
-     * D().enemyHp 一个变量就够了，两个都变会让「为什么这枪没打死」
-     * 变得难以判断。
+     * 武装敌人要先于 hpMax 判定（血量翻倍依据这一点）。
+     * 血量 ×ARMORED_HP_MULT：一枪爆头（AR 63）最多打穿护甲，
+     * 做不到首发即死 —— 重甲目标要持续集火。
      */
     this.armored = !!spec.armored;
+    this.hpMax = this.armored ? D().enemyHp * ARMORED_HP_MULT : D().enemyHp;
+    this.hp = this.hpMax;
+    /**
+     * 护甲先扣、生命后扣，与玩家侧 PLAYER.armorAbsorb 同一套公式
+     * （见 takeDamage）。护甲值不随难度缩放——它是关卡里固定的战术
+     * 要素，不是难度杠杆；血量随难度走，两个变量各司其职。
+     */
     this.armorMax = this.armored ? ARMOR_MAX : 0;
     this.armor = this.armorMax;
     this.state = STATE.IDLE;

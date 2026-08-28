@@ -50,6 +50,19 @@ export const BLOCK = {
   CEILING:   28,   // 天花板（= 二层楼板的下表面）
   WALL_IN:   29,   // 室内墙面（比外墙略亮，区分内外）
   ROOF:      30,   // 屋顶
+
+  /**
+   * 关着的门所占的格。solid + opaque（挡移动、挡子弹、挡视线、挡光，
+   * 与墙完全一致），但 render:false —— 外观交给 Door 的琥珀色门板网格。
+   *
+   * ══ 为什么必须单独一个 ID ══
+   *
+   * 以前关门是往格子里写 BLOCK.WALL。那是个**整格实心立方体**，正好把
+   * 0.14 厚的门板网格整个包在里面 —— 玩家看到的是一堵灰墙，根本看不出
+   * 这里是门，也就不会想到按 E。现在体素只负责「挡住」，外观只由门板
+   * 网格负责，两者不再互相遮蔽。
+   */
+  DOOR:      31,
 };
 
 const def = (o) => ({
@@ -96,6 +109,8 @@ BLOCKS[BLOCK.LAMP]      = def({ color: FURN.lamp,   name: 'lamp',   height: 0.6,
 // ── 建筑材质 ──────────────────────────────────────────────────────────────
 // 明度刻意分三档：地板最亮（手电扫过去有反馈）、墙中等、天花板最暗
 // （抬头是压迫感的来源）。这三档让室内空间的上下界一眼可读。
+// 关着的门：挡住一切，但不画几何（门板网格自己画，见 systems/doors.js）
+BLOCKS[BLOCK.DOOR]      = def({ color: PALETTE.amber, name: 'door', render: false });
 BLOCKS[BLOCK.CONCRETE]  = def({ color: PALETTE.concrete, name: 'concrete', climbable: true });
 BLOCKS[BLOCK.CEILING]   = def({ color: PALETTE.ceiling,  name: 'ceiling',  climbable: true });
 BLOCKS[BLOCK.WALL_IN]   = def({ color: PALETTE.wallIn,   name: 'wall_in' });

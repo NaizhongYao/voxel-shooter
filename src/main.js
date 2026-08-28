@@ -83,6 +83,10 @@ const hud = {
   nadeKind: $('nade-kind'), flashWhite: $('flash-white'),
   missions: $('missions'), msGrid: $('ms-grid'), mapFull: $('map-full'),
 };
+// 调试面板（FPS/POS/SHOTS/HITS…）默认隐藏，反引号切换（见下方 input.justPressed('debug')）。
+// 不在 HTML 里写死 display:none，是因为面板同时也是 boot 信息的容器；
+// 这里只在启动时收起一次，避免它从第一帧就糊在开局界面右上角。
+hud.stats.style.display = 'none';
 
 // ── Renderer ───────────────────────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({
@@ -255,8 +259,15 @@ function buildMissionCards() {
     el.className = 'ms-card' + (lv.locked ? ' locked' : '') + (lv.future ? ' future' : '');
     el.dataset.level = lv.id ?? '';
     el.dataset.index = i;
+    /**
+     * 卡片上的敌人数必须跟着**当前选中的难度**（pendingDiff）走。
+     *
+     * 这里曾经写死 DIFFICULTY_ORDER[0]（简单档）—— 于是专家难度下卡片
+     * 报 10 人而游戏实际生成 15 人，这正是「UI 显示的敌人数与实际不符」
+     * 的根因。数字只能有一个来源：countEnemies(关卡, 当前难度.enemyTier)。
+     */
     const n = !lv.future && !lv.locked
-      ? countEnemies(lv.spawns, DIFFICULTIES[DIFFICULTY_ORDER[0]].enemyTier)
+      ? countEnemies(lv.spawns, (DIFFICULTIES[pendingDiff] ?? D()).enemyTier)
       : 0;
     if (lv.future) {
       el.innerHTML = `
@@ -375,6 +386,9 @@ function buildDifficultyCards() {
       history.replaceState(null, '', location.pathname + '?' + q.toString());
       buildDifficultyCards();
       refreshBriefCounts();
+      // 任务选择屏的卡片也报敌人数 —— 换难度后必须跟着重算，
+      // 否则返回选择屏会看到旧难度的人数（就是这类不一致的老毛病）。
+      buildMissionCards();
     });
     hud.diffs.appendChild(el);
   }
