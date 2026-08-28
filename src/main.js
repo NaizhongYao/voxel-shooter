@@ -21,6 +21,7 @@ import { PickupManager } from './systems/pickups.js';
 import { GrenadeSystem } from './systems/grenades.js';
 import { Audio } from './systems/audio.js';
 import { EnemyIndicators } from './systems/indicators.js';
+import { EmergencyLights } from './systems/lights.js';
 
 const canvas = document.getElementById('game');
 const $ = (id) => document.getElementById(id);
@@ -70,6 +71,7 @@ const hud = {
   nadeCount: $('nade-count'), nadeBox: $('nade-box'),
   lowhp: $('lowhp'),
   ammo: $('ammo'), ammoReserve: $('ammo-reserve'), weapon: $('weapon-name'),
+  objective: $('objective'), objectiveLabel: $('objective-label'),
   enemies: $('enemy-count'), crosshair: $('crosshair'),
   reload: $('reload'), reloadBar: $('reload-bar'),
   toast: $('toast'), damage: $('damage-flash'),
@@ -224,6 +226,15 @@ const enemyLights = new EnemyFlashlights(scene);
 // 头顶状态指示器：玩家判断「我被发现了吗」的唯一可靠信息源
 const indicators = new EnemyIndicators(scene, enemies);
 
+/**
+ * 应急灯：关卡自带的可击碎闪烁灯。从体素网格扫出来，所以关卡只要
+ * 往网格里写 FLICKER_LAMP 就自动接管。
+ * 敌人要能查「玩家是不是站在灯下」，所以每个敌人都拿到这个引用。
+ */
+const lights = new EmergencyLights(scene, world);
+lights.scan();
+for (const e of enemies) e.lights = lights;
+
 // 门：关闭时像墙一样挡光挡视线挡子弹（写进体素网格）
 const doors = new DoorManager(scene, world, LEVEL.doors);
 // 主入口默认敞开：玩家出生在庭院正对这两扇门，开局撞在关着的门上体验很差，
@@ -233,6 +244,13 @@ doors.openAt(LEVEL.mainEntrance);
 mesher.rebuildDirty();
 
 const combat = new Combat(world, effects, flashPool, enemies);
+// 玩家的子弹可以打碎应急灯（灯不在体素碰撞里，combat 单独做球体求交）
+combat.lights = lights;
+combat.onLampBreak = () => {
+  // 打碎的灯写成残骸方块，需要重建那一块的顶点色
+  mesher.rebuildDirty();
+  toast('灯被打碎', 900);
+};
 const grenades = new GrenadeSystem(scene, world, effects, flashPool);
 const audio = new Audio();
 const pickups = new PickupManager(scene, world);
@@ -342,8 +360,8 @@ function buildMissionCards() {
      * 卡片上的敌人数必须跟着**当前选中的难度**（pendingDiff）走。
      *
      * 这里曾经写死 DIFFICULTY_ORDER[0]（简单档）—— 于是专家难度下卡片
-     * 报 10 人而游戏实际生成 15 人，这正是「UI 显示的敌人数与实际不符」
-     * 的根因。数字只能有一个来源：countEnemies(关卡, 当前难度.enemyTier)。
+     * 报低于实际值。现在只读当前难度和关卡 tier，人数唯一来源仍是
+     * countEnemies(关卡, 当前难度.enemyTier)。三关当前简单/困难/专家都是 13/17/20。
      */
     const n = !lv.future && !lv.locked
       ? countEnemies(lv.spawns, (DIFFICULTIES[pendingDiff] ?? D()).enemyTier)
@@ -795,6 +813,27 @@ function toast(msg, ms = 1800) {
   game.toastUntil = performance.now() / 1000 + ms / 1000;
 }
 
+/**
+ * 顶部目标卡在两种任务状态间切换：清敌时显示人数，清场后持续指向庭院撤离。
+ * 这不是短暂 toast，玩家走到出生庭院之前都会看到目标与剩余距离。
+ */
+function updateObjectiveHud(extractDistance = null) {
+  if (game.extractReady) {
+    const distance = extractDistance ?? Math.hypot(
+      player.pos.x - SPAWN.x, player.pos.z - SPAWN.z
+    );
+    hud.objective?.classList.add('extracting');
+    if (hud.objectiveLabel) hud.objectiveLabel.textContent = '全部目标已清除';
+    hud.enemies.textContent = `前往庭院撤离 · ${Math.max(0, Math.ceil(distance))} m`;
+    return;
+  }
+
+  const alive = enemies.filter((e) => !e.dead).length;
+  hud.objective?.classList.remove('extracting');
+  if (hud.objectiveLabel) hud.objectiveLabel.textContent = '剩余敌人';
+  hud.enemies.textContent = `${alive} / ${game.totalEnemies}`;
+}
+
 combat.onPlayerHit = (dmg, zone) => {
   if (game.over || player.dead) return;
   const r = player.applyDamage(dmg);
@@ -839,7 +878,8 @@ combat.onKill = (enemy) => {
   if (game.killed >= game.totalEnemies) {
     game.extractReady = true;
     extractMesh.visible = true;
-    toast('全部目标已清除 · 返回庭院撤离', 4000);
+    updateObjectiveHud();
+    toast('全部目标已清除 · 前往庭院撤离', 4000);
   }
 };
 
@@ -888,7 +928,9 @@ grenades.onExplode = (pos, ownerIsPlayer, spec = GRENADE) => {
     const d = grenades.damageAt(pos, e.pos.x, e.pos.y + e.height * 0.5, e.pos.z, spec);
     if (d <= 0) continue;
     _blastDir.set(e.pos.x - pos.x, 0, e.pos.z - pos.z).normalize();
-    const killed = e.takeDamage(d, 'torso', _blastDir);
+    // 'blast'：爆炸是全方向的，不吃盾兵的正面护盾判定 ——
+    // 手雷永远能对盾兵造成全额伤害，这是「绕侧或用手雷」的落地方式。
+    const killed = e.takeDamage(d, 'torso', _blastDir, 'blast');
     if (killed) {
       combat.stats.kills++;
       combat.markBlood(e.pos);
@@ -1011,6 +1053,7 @@ function frame(nowMs) {
     for (const e of enemies) e.rig.updateDeath(dt);
     effects.update(dt);
     flashPool.update(dt);
+    lights.update(dt, player.pos.x, player.pos.y, player.pos.z);
     grenades.update(dt);
     renderer.render(scene, cam.cam);
     if (game.deathHold <= 0) endGame(false);
@@ -1190,6 +1233,7 @@ function frame(nowMs) {
     // ── 撤离判定 ──
     if (game.extractReady) {
       const d = Math.hypot(player.pos.x - SPAWN.x, player.pos.z - SPAWN.z);
+      updateObjectiveHud(d);
       if (d < 1.6) endGame(true);
       extractMesh.material.opacity = 0.6 + Math.sin(now * 4) * 0.35;
     }
@@ -1205,6 +1249,8 @@ function frame(nowMs) {
 
   effects.update(dt);
   flashPool.update(dt);
+  // 应急灯：闪烁 + 把有限的真光源分配给离玩家最近的几盏
+  lights.update(dt, player.pos.x, player.pos.y, player.pos.z);
   mesher.rebuildDirty();
 
   // 准星阻挡提示
@@ -1274,7 +1320,7 @@ function frame(nowMs) {
     }
   }
   const alive = enemies.filter((e) => !e.dead).length;
-  hud.enemies.textContent = `${alive} / ${game.totalEnemies}`;
+  updateObjectiveHud();
   // 收尾提示（一次）：剩下的敌人全图亮标，玩家不会再找不到人、无法通关
   if (!game.revealed && alive > 0 && alive <= 3) {
     game.revealed = true;
@@ -1334,8 +1380,7 @@ function syncVitalsHud() {
    * 占位符「– / –」，一进游戏才突然跳出真数字。现在启动即为真值，
    * 且与 game.totalEnemies（= 实际生成的敌人数）同源。
    */
-  const aliveNow = enemies.filter((e) => !e.dead).length;
-  hud.enemies.textContent = `${aliveNow} / ${game.totalEnemies}`;
+  updateObjectiveHud();
 }
 syncVitalsHud();
 
@@ -1343,5 +1388,5 @@ requestAnimationFrame(frame);
 
 window.__game = {
   world, player, cam, flashlight, scene, renderer, mesher,
-  enemies, combat, loadout, pickups, game, effects, doors,
+  enemies, combat, loadout, pickups, game, effects, doors, lights,
 };

@@ -1,5 +1,8 @@
 import * as THREE from 'three';
-import { PALETTE, PLAYER, LIGHT, ARMOR_ABSORB, ARMOR_MAX, ARMORED_HP_MULT } from '../config.js';
+import {
+  PALETTE, PLAYER, LIGHT, ARMOR_ABSORB, ARMOR_MAX, ARMORED_HP_MULT,
+  SHIELD_ENEMY, RUSHER_ENEMY,
+} from '../config.js';
 import { D } from '../difficulty.js';
 import { BlockyRig } from '../player/rig.js';
 import { WEAPONS, WeaponInstance, HITBOX_MULT } from './weapons.js';
@@ -29,6 +32,28 @@ export const ARCHETYPE = {
   AMBUSHER: 'ambusher',
   SENTRY:   'sentry',     // 蹲守者：固定朝向，大视野锥
   PATROLLER:'patroller',  // 巡逻者：沿路径走，会呼叫同伴
+
+  /**
+   * 重甲盾兵（02 诊所起引入）。正面几乎打不穿，逼玩家放弃站桩对枪。
+   *
+   * 护盾只挡正面 ±75°（前方 150° 扇区）：从这个扇区打进来的子弹被
+   * 吸收 94%，绕到侧后方则护盾完全不生效，和普通敌人没区别。
+   * 手雷不吃这条判定（爆炸是全方向的）—— 这是「绕侧或用手雷」这个
+   * 设计意图的机制载体，见 takeDamage 的 source 参数。
+   *
+   * 几乎不动、转身比普通敌人慢半拍：转得慢，绕后才有意义。
+   */
+  SHIELD:   'shield',
+
+  /**
+   * 冲锋手（03 电台起引入）。脆但极快，破坏「找掩体打远处」的舒适区。
+   *
+   * 确认交火（举枪反应结束）之后不再按 pushChance 概率性挪动，
+   * 而是全速冲向玩家，冲到霰弹有效距离才停下开火。
+   * 血量比普通敌人还低、没有护甲 —— 危险在于「来不来得及打中」，
+   * 不是「打不打得动」。
+   */
+  RUSHER:   'rusher',
 };
 
 /** 兼容旧名字，避免关卡配置里散落的字符串失效 */
@@ -64,17 +89,29 @@ const PERCEPTION = {
   /**
    * ── 转向速率（rad/s 的 lerp 系数）──
    *
-   * 旧值是 4（举枪时）/ 9（战斗中），换算成实际转身要 0.4–0.9 秒才能
-   * 面向侧后方的目标 —— 玩家从背后绕过来时，敌人像在水里转身，
-   * 完全不像真人被偷袭后的反应。
+   * 旧值 18/14/9 换算成转 180° 只要 0.15 秒左右，等于瞬间甩头，
+   * 完全没有真人转身该有的重量感。整体下调 40%（×0.6），
+   * 让举枪跟枪、查房转身都看得出「正在转」，而不是瞬间对准。
    *
-   * 现在 combat 18 / alert 14：转 180° 约 0.15 秒，接近真人急转头的速度。
    * 这不会让敌人变得不公平 —— 反应延迟（reactionTimer）才是玩家的
-   * 机会窗口，转身慢只是让敌人看起来蠢。两者是独立的旋钮。
+   * 机会窗口，转身慢只是让敌人看起来更真实。两者是独立的旋钮。
    */
-  turnRateCombat: 18,
-  turnRateAlert: 14,
-  turnRateSearch: 9,        // 朝最后已知位置转（没看见人，可以稍慢）
+  turnRateCombat: 10.8,     // 18 × 0.6
+  turnRateAlert: 8.4,       // 14 × 0.6
+  turnRateSearch: 5.4,      // 9  × 0.6，朝最后已知位置转/扫视中心过渡也用它
+
+  /**
+   * ── 站岗感修复：蹲守者/查房不再是「定住→甩头→定住」的离散跳变 ──
+   *
+   * 旧版每隔 2~4 秒随机挑一个新方向再快速转过去，玩家看到的是长时间
+   * 面朝一处不动、然后突然甩头——像在站岗。现在改成持续的正弦左右
+   * 摆动，手电挂在头部朝向上，摆动本身就是巡视扫光，没有任何「定住
+   * 不动」的瞬间。
+   */
+  scanAmplitudeRad: 35 * Math.PI / 180,        // 蹲守者摆动振幅，约 ±35°
+  scanPeriod: 6,                                // 一个来回的秒数（实例上再加随机抖动）
+  investScanAmplitudeRad: 50 * Math.PI / 180,  // 查房无目标时的张望振幅，更急促
+  investScanPeriod: 3,
 
   // ── 警戒度（alertLevel）的涨落速率，单位：每秒 ──
   /** 看见玩家时的上涨速率（约 0.5 秒涨满 → 进入战斗） */
@@ -178,14 +215,27 @@ export class Enemy {
      * 做不到首发即死 —— 重甲目标要持续集火。
      */
     this.armored = !!spec.armored;
-    this.hpMax = this.armored ? D().enemyHp * ARMORED_HP_MULT : D().enemyHp;
+    /** 重甲盾兵 / 冲锋手（新原型，见 ARCHETYPE 的注释） */
+    this.isShield = this.archetype === ARCHETYPE.SHIELD;
+    this.isRusher = this.archetype === ARCHETYPE.RUSHER;
+
+    /**
+     * 血量：盾兵固定 200（不吃难度缩放）、冲锋手 ×0.8（脆），
+     * 精英 ×3，其余 ×1。
+     */
+    const hpMult = this.isRusher ? RUSHER_ENEMY.hpMult
+      : this.armored ? ARMORED_HP_MULT : 1;
+    this.hpMax = this.isShield ? SHIELD_ENEMY.hpMax : Math.round(D().enemyHp * hpMult);
     this.hp = this.hpMax;
     /**
-     * 护甲先扣、生命后扣，与玩家侧 PLAYER.armorAbsorb 同一套公式
-     * （见 takeDamage）。护甲值不随难度缩放——它是关卡里固定的战术
-     * 要素，不是难度杠杆；血量随难度走，两个变量各司其职。
+     * 护甲先扣、生命后扣，与玩家侧 Player.applyDamage 同一套公式。
+     *
+     * 盾兵有固定 200 点「方向性护甲」，但不会像普通精英那样所有方向
+     * 都吃它：takeDamage 只有在正面子弹命中时才从这 200 点里扣；
+     * 侧后与爆炸完全绕过，不减甲也不减伤。
      */
-    this.armorMax = this.armored ? ARMOR_MAX : 0;
+    this.armorMax = this.isShield ? SHIELD_ENEMY.armorMax
+      : this.armored ? ARMOR_MAX : 0;
     this.armor = this.armorMax;
     this.state = STATE.IDLE;
     this.stateTime = 0;
@@ -198,9 +248,17 @@ export class Enemy {
     this.alerted = false;
     this.nextShotAt = 0;
     this.moveSpeed = 0;             // 本帧的移动速度，驱动腿部摆动
-    // 蹲守者的扫视状态（避免长时间面对墙）
-    this.scanTimer = Math.random() * 2;
-    this.scanTarget = this.yaw;
+    /**
+     * 蹲守者的持续左右扫视状态（见 PERCEPTION.scanAmplitudeRad 的注释）。
+     * scanCenter 是摆动中心朝向，scanPhase 驱动正弦摆动，
+     * scanShiftTimer 到点后悄悄挪一次中心（避开墙面）。
+     */
+    this.scanCenter = this.yaw;
+    this.scanPhase = Math.random() * Math.PI * 2;
+    this.scanShiftTimer = 8 + Math.random() * 4;
+    /** 查房无目标时的张望摆动，同一套机制，振幅/周期更急促 */
+    this.investScanCenter = this.yaw;
+    this.investScanPhase = Math.random() * Math.PI * 2;
     // 搜索状态：失去目标后去哪些点找人
     this.searchPoints = null;
     this.searchIdx = 0;
@@ -210,6 +268,11 @@ export class Enemy {
     this.searchOrigin = null;
     /** 上次尝试开门的时间，避免每帧反复推同一扇门 */
     this.lastDoorAt = -99;
+    /**
+     * 应急灯系统（可选，由 main.js 装配时注入）。
+     * 只用来查「玩家是不是站在灯下」，见 canSeePlayer。
+     */
+    this.lights = null;
 
     /**
      * 警戒度 0..1 —— 连续量，驱动头顶指示器的填充与颜色。
@@ -229,7 +292,8 @@ export class Enemy {
     this.rig = new BlockyRig(PALETTE.threat, {
       isPlayer: false,
       armored: this.armored,
-      kit: this.armored ? 'armored' : 'enemy',
+      // 盾兵有自己的一套钢灰护壳（只包正面），见 rig.js 的 'shield' 分支
+      kit: this.isShield ? 'shield' : (this.armored ? 'armored' : 'enemy'),
     });
     this.rig.root.position.copy(this.pos);
     this.rig.setGun(spec.weapon);
@@ -258,7 +322,8 @@ export class Enemy {
     if (this.facesWall(this.yaw)) {
       this.yaw = this.pickOpenDirection(Math.PI);
       this.homeYaw = this.yaw;
-      this.scanTarget = this.yaw;
+      this.scanCenter = this.yaw;
+      this.investScanCenter = this.yaw;
     }
   }
 
@@ -414,16 +479,52 @@ export class Enemy {
   /**
    * @param dir 子弹飞行方向（可选），决定倒地朝向
    */
-  takeDamage(amount, zone, dir = null) {
+  /**
+   * @param source 'bullet' | 'blast' —— 这一刀是子弹还是爆炸。
+   *
+   * ══ 为什么必须区分 ══
+   *
+   * 子弹和手雷走的是同一个 takeDamage。盾兵的护盾只挡正面，判定依据是
+   * 「伤害来向 vs 他面朝方向」；而爆炸是全方向的，没有「来向」这个概念。
+   * 不加这个标记的话，炸在他正面的手雷会被误判成正面命中、被护盾挡掉
+   * 94% —— 那么「手雷是盾兵的解法」这条设计就完全落不了地。
+   * 默认 'bullet' 保持所有旧调用点的行为不变。
+   */
+  takeDamage(amount, zone, dir = null, source = 'bullet') {
     if (this.dead) return false;
 
     /**
-     * 武装敌人：护甲先吸收 ARMOR_ABSORB 比例的伤害，其余渗透到生命。
-     * 与玩家侧 Player.applyDamage 同一套公式（见 player/player.js），
-     * 保持「护甲机制」在敌我两侧手感一致——玩家打武装敌人时的体感
-     * 应该跟自己中弹时是同一种「盔甲在慢慢吃伤害」的感觉。
+     * ── 重甲盾兵：方向性护盾 ──
+     *
+     * 只有子弹吃这条判定。dir 是子弹的飞行方向，所以「子弹打向他的方向」
+     * 取反才是「他看到子弹来的方向」。用他的面朝向量与来向的夹角判断：
+     * 落在前方 150° 扇区内 → 吸收 94%；扇区外 → 护盾完全不生效。
      */
-    if (this.armored && this.armor > 0) {
+    if (this.isShield && source === 'bullet' && dir && this.armor > 0) {
+      const fwdX = -Math.sin(this.yaw), fwdZ = -Math.cos(this.yaw);
+      // 来向：从他指向射手（dir 是子弹前进方向，取反）
+      const inX = -dir.x, inZ = -dir.z;
+      const inLen = Math.hypot(inX, inZ) || 1;
+      const cos = (inX / inLen) * fwdX + (inZ / inLen) * fwdZ;
+      const halfArc = Math.cos(SHIELD_ENEMY.frontArcDeg * Math.PI / 360);
+      if (cos >= halfArc) {
+        /**
+         * 正面子弹：固定 200 护甲池吸收 94%，剩下 6%渗到 200 HP。
+         * 甲耗尽之后，正面也终于会掉满血；但侧后方/爆炸从第一发起
+         * 就完全绕开这段代码，不扣甲也不减伤。
+         */
+        const absorbed = Math.min(this.armor, Math.round(amount * SHIELD_ENEMY.frontAbsorb));
+        this.armor -= absorbed;
+        amount -= absorbed;
+      }
+      // 扇区外：不做任何吸收，和普通敌人完全一样
+    }
+
+    /**
+     * 普通武装精英：护甲先吸收 ARMOR_ABSORB 比例的伤害，其余渗透到生命。
+     * 盾兵不走这条通用护甲路径 —— 它只在上面的正面 bullet 分支扣甲。
+     */
+    if (this.armored && !this.isShield && this.armor > 0) {
       const absorbed = Math.min(this.armor, Math.round(amount * ARMOR_ABSORB));
       this.armor -= absorbed;
       amount -= absorbed;
@@ -478,11 +579,22 @@ export class Enemy {
     const dy = py - this.eyeY;
     const dist = Math.hypot(dx, dy, dz);
 
-    let range = perc().visionRange * flashlight.detectionMultiplier;
+    /**
+     * ── 玩家有多显眼 ──
+     *
+     * 手电开着       ×1.8（自己的锥光，方向感很强）
+     * 站在应急灯下   ×2.0（持续、全向，比手电更糟）
+     * 两者都没有     手电的 ×0.45 再 ×shadowMul（藏在暗处）
+     *
+     * 应急灯倍率**取代**而不是叠乘手电倍率：关着手电站在灯下不该比
+     * 开着手电还安全，否则「打碎灯」这个决策就没有意义了。
+     */
+    const lampLit = this.lights ? this.lights.litAt(px, player.pos.y, pz) : false;
+    let range = perc().visionRange
+      * (lampLit ? LIGHT.emergencyLamp.litDetectMul : flashlight.detectionMultiplier);
     if (this.archetype === ARCHETYPE.SENTRY) range *= PERCEPTION.sentryRangeMul;
-    // 玩家不在光照中时更难被发现
-    const lit = flashlight.on;
-    if (!lit) range *= PERCEPTION.shadowMul;
+    // 手电与应急灯都没照到 → 藏在阴影里，更难被发现
+    if (!flashlight.on && !lampLit) range *= PERCEPTION.shadowMul;
 
     if (dist > range) return false;
 
@@ -650,6 +762,14 @@ export class Enemy {
   }
 
   doIdle(dt, sees, spotsLight, player) {
+    /**
+     * 盾兵是守点，不参加普通敌人的左右扫视。否则他会在玩家还没接近时
+     * 随机把护盾转向墙面，玩家绕进来却正好得到免费背刺，招牌敌人的
+     * 「正面封锁」就变成纯随机。固定面朝由关卡配置给定；真正看见人后
+     * 仍会以 turnRateMul 0.45 缓慢转身，绕后依然有意义。
+     */
+    if (this.isShield) return;
+
     if (this.isAmbusher) {
       /**
        * 伏击者：蹲在掩体后不动，玩家靠近或被看见 → 站起来反击。
@@ -674,23 +794,28 @@ export class Enemy {
 
     if (this.patrol) {
       this.walkPatrol(dt);
+    } else if (this.isAmbusher) {
+      // 伏击者理论上不会走到这个分支（doIdle 顶部已经 return），保留只为防御。
     } else {
       /**
-       * 蹲守者：原地扫视，但绝不长时间面对墙。
+       * 蹲守者：持续左右扫视（含手电），不再是「定住→甩头→定住」。
        *
-       * 原来是 homeYaw + sin() 的固定小幅摆动 —— 如果布置时给的 homeYaw
-       * 正好朝墙，这个敌人整局都在瞪着墙面，看起来完全是坏的。
-       * 现在扫视幅度大得多（±75°），而且每次到端点都检查前方是不是墙，
-       * 朝墙就直接换一个开阔方向。
+       * 用一个正弦摆动驱动 yaw，扫视本身就是连续动作，没有任何静止
+       * 的瞬间——手电挂在头部朝向上，摆动自然带出「左右扫光」。
+       * 摆动中心 scanCenter 每隔一段时间悄悄挪一次（仍避开墙面），
+       * 挪动过程也走同一套 turnRateSearch，不会显得突兀。
        */
-      this.scanTimer -= dt;
-      if (this.scanTimer <= 0) {
-        this.scanTimer = 2.2 + Math.random() * 2.0;
-        this.scanTarget = this.pickOpenDirection();
+      this.scanShiftTimer -= dt;
+      if (this.scanShiftTimer <= 0) {
+        this.scanShiftTimer = 8 + Math.random() * 4;
+        this.scanCenter = this.pickOpenDirection();
+      } else if (this.facesWall(this.scanCenter, 1.4)) {
+        // 中心本身朝墙（比如刚经历过 escapeIfStuck）：提前换一次，不等定时器
+        this.scanCenter = this.pickOpenDirection();
       }
-      // 转向目标。转得比较快（×2.6）是有意的：慢慢扫过墙面的那段时间
-      // 看起来还是在瞪墙，快速转过去就只是「换了个方向看」。
-      this.yaw += angleDiff(this.scanTarget, this.yaw) * Math.min(1, dt * 2.6);
+      this.scanPhase += dt * (Math.PI * 2 / PERCEPTION.scanPeriod);
+      const target = this.scanCenter + Math.sin(this.scanPhase) * PERCEPTION.scanAmplitudeRad;
+      this.yaw += angleDiff(target, this.yaw) * Math.min(1, dt * PERCEPTION.turnRateSearch);
     }
 
     if (sees) this.toAlert();
@@ -699,6 +824,9 @@ export class Enemy {
       this.state = STATE.INVESTIGATE;
       this.stateTime = 0;
       this.investigateTarget = null;
+      // 没有具体目标点，立刻进入张望摆动，中心就是当前朝向
+      this.investScanCenter = this.yaw;
+      this.investScanPhase = 0;
       this.alerted = true;
     }
   }
@@ -765,10 +893,21 @@ export class Enemy {
           const next = this.pickSearchPoint();
           if (next) this.investigateTarget = next;
         }
+        // 刚到达（不再继续搜房）→ 从当前朝向开始张望，而不是沿用出生朝向
+        if (!this.investigateTarget) {
+          this.investScanCenter = this.yaw;
+          this.investScanPhase = 0;
+        }
       }
     } else {
-      // 没有目标点：原地环视找人（不是死盯一个方向）
-      this.yaw += dt * 1.4;
+      /**
+       * 没有目标点：持续左右张望找人，同一套摆动机制，
+       * 振幅更大（±50°）、周期更短（3s）—— 「在找人」该比蹲守站岗更急切。
+       */
+      this.investScanPhase += dt * (Math.PI * 2 / PERCEPTION.investScanPeriod);
+      const target = this.investScanCenter
+        + Math.sin(this.investScanPhase) * PERCEPTION.investScanAmplitudeRad;
+      this.yaw += angleDiff(target, this.yaw) * Math.min(1, dt * PERCEPTION.turnRateSearch);
     }
     if (this.stateTime > p.investigateTime) {
       // 调查超时 → 回到常态行为。巡逻者继续走路线，
@@ -776,7 +915,12 @@ export class Enemy {
       this.state = STATE.IDLE;
       this.stateTime = 0;
       this.investigateTarget = null;
-      this.scanTimer = 0;
+      // 重置两套扫视状态，回到 IDLE 后从当前朝向开始重新摆
+      this.scanCenter = this.yaw;
+      this.scanPhase = 0;
+      this.scanShiftTimer = 8 + Math.random() * 4;
+      this.investScanCenter = this.yaw;
+      this.investScanPhase = 0;
       if (this.patrol) this.patrolIdx = this.nearestPatrolIndex();
     }
   }
@@ -877,21 +1021,46 @@ export class Enemy {
       return;
     }
 
-    // 只有真正看见时才精确跟枪
-    this.faceTarget(player, dt, PERCEPTION.turnRateCombat);
+    /**
+     * 只有真正看见时才精确跟枪。
+     * 盾兵转身慢半拍（turnRateMul 0.45）—— 他转得慢，绕后才有意义；
+     * 冲锋手略快一点，能跟着玩家拐弯，但不是制导导弹。
+     */
+    const turnMul = this.isShield ? SHIELD_ENEMY.turnRateMul
+      : this.isRusher ? RUSHER_ENEMY.turnRateMul : 1;
+    this.faceTarget(player, dt, PERCEPTION.turnRateCombat * turnMul);
 
     /**
-     * ── 主动推进 ──
+     * ── 冲锋手：确认交火后全速冲锋 ──
      *
-     * 站桩对射对玩家最有利：距离固定、掩体固定，交火变成纯粹的比手速。
-     * 让敌人边打边压上来（保留 4 vox 的交火距离，不会贴脸糊成一团），
-     * 玩家必须持续调整站位。pushChance 是每帧的推进意愿，专家档 0.8
-     * 意味着几乎一直在压上来。
+     * 不走下面的 pushChance 概率推进，而是每帧都全速冲向玩家，
+     * 冲到霰弹有效距离（stopDist）才停下开火。
+     *
+     * 冲刺发生在 COMBAT 状态里，也就是举枪反应延迟结束**之后** ——
+     * 玩家第一次看到他站起来/转向自己时仍有正常的反应窗口，
+     * 这不是偷袭式的瞬间贴脸。
      */
-    if (p.pushChance > 0 && Math.random() < p.pushChance) {
+    if (this.isRusher) {
+      const gap = Math.hypot(player.pos.x - this.pos.x, player.pos.z - this.pos.z);
+      if (gap > RUSHER_ENEMY.stopDist) {
+        this.moveToward(player.pos, dt, RUSHER_ENEMY.chargeSpeed, { doors: ctx.doors, now });
+      }
+    } else if (p.pushChance > 0 && Math.random() < p.pushChance) {
+      /**
+       * ── 主动推进 ──
+       *
+       * 站桩对射对玩家最有利：距离固定、掩体固定，交火变成纯粹的比手速。
+       * 让敌人边打边压上来（保留 4 vox 的交火距离，不会贴脸糊成一团），
+       * 玩家必须持续调整站位。pushChance 是每帧的推进意愿，专家档 0.8
+       * 意味着几乎一直在压上来。
+       *
+       * 盾兵几乎不动（moveSpeedMul 0.35）：他的战术是挡在原地当墙，
+       * 压上来的话玩家反而更容易绕到他侧后方。
+       */
       const gap = Math.hypot(player.pos.x - this.pos.x, player.pos.z - this.pos.z);
       if (gap > 4) {
-        this.moveToward(player.pos, dt, 1.6 + p.pushChance, { doors: ctx.doors, now });
+        const spd = (1.6 + p.pushChance) * (this.isShield ? SHIELD_ENEMY.moveSpeedMul : 1);
+        this.moveToward(player.pos, dt, spd, { doors: ctx.doors, now });
       }
     }
 
@@ -920,7 +1089,9 @@ export class Enemy {
   }
 
   callAllies(ctx) {
-    if (this.archetype !== ARCHETYPE.PATROLLER) return;
+    // 巡逻者与冲锋手会喊人（都是「在楼里活动」的角色）；
+    // 伏击者与盾兵是守点的，喊人会破坏他们「安静埋伏」的定位。
+    if (this.archetype !== ARCHETYPE.PATROLLER && !this.isRusher) return;
     const base = perc().callRadius;
     for (const e of ctx.enemies) {
       if (e === this || e.dead) continue;

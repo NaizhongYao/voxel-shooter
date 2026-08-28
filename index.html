@@ -62,12 +62,16 @@
     border:1px solid var(--rule); margin-top:8px; margin-left:auto; }
   #reload-bar{ height:100%; width:0%; background:var(--amber); }
 
-  /* 顶部中央：敌人计数 */
+  /* 顶部中央：清敌目标 / 清场后的持续撤离指示 */
   #objective{ position:absolute; left:50%; top:22px; transform:translateX(-50%);
     text-align:center; background:var(--panel); border:1px solid var(--rule);
-    padding:8px 22px; }
+    padding:8px 22px; transition:border-color .2s, box-shadow .2s; }
   #objective .lbl{ font-size:.62rem; letter-spacing:.28em; color:var(--muted); }
   #enemy-count{ font-size:1.3rem; font-weight:700; color:var(--threat); letter-spacing:.08em; }
+  #objective.extracting{ border-color:rgba(63,185,111,.85);
+    box-shadow:0 0 18px rgba(63,185,111,.18); }
+  #objective.extracting .lbl, #objective.extracting #enemy-count{ color:var(--good); }
+  #objective.extracting #enemy-count{ font-size:1rem; letter-spacing:.12em; }
 
   /**
    * 右上：小地图。只画房间轮廓 + 门 + 撤离点 + 玩家箭头。
@@ -170,9 +174,11 @@
 
   /* ══ 任务选择屏（开局第一屏）══════════════════════════════════════ */
   #missions{ position:absolute; inset:0; display:flex; align-items:center;
-    justify-content:center; pointer-events:auto; overflow:hidden;
+    justify-content:center; pointer-events:auto; overflow-y:auto; overflow-x:hidden;
+    padding:22px 0;
     background:radial-gradient(1100px 640px at 50% -8%, #18202e 0%, rgba(8,10,14,.96) 58%),
        rgba(8,10,14,.97); }
+  @media (min-width:900px){ #ms-grid{ grid-template-columns:repeat(4,1fr); gap:12px; } }
   #missions::after{ content:''; position:absolute; inset:0; pointer-events:none;
     background:linear-gradient(rgba(255,255,255,.035) 0 1px, transparent 1px 4px);
     background-size:100% 4px; animation:scanline 1.4s linear infinite; }
@@ -382,7 +388,7 @@
   </div>
 
   <div id="objective">
-    <div class="lbl">剩余敌人</div>
+    <div class="lbl" id="objective-label">剩余敌人</div>
     <div id="enemy-count">– / –</div>
   </div>
 

@@ -63,6 +63,21 @@ export const BLOCK = {
    * 网格负责，两者不再互相遮蔽。
    */
   DOOR:      31,
+
+  /**
+   * 应急灯（可击碎）。天花板下的老式灯管，接触不良所以一直在闪。
+   *
+   * 与 LAMP 的区别：LAMP 是纯装饰的自发光方块（顶点色，没有真光源），
+   * 这个挂一盏真的 PointLight —— 会真的照亮房间，也真的让站在灯下的
+   * 玩家更容易被敌人看见。玩家可以把它打碎换回黑暗，这是本作唯一
+   * 「玩家能改写关卡照明」的手段，所以它必须是可被子弹命中的方块。
+   *
+   * 不 solid（贴在天花板下，不该挡人走路），但 hittable —— 命中判定
+   * 由 combat 的方块射线单独处理，见 systems/lights.js。
+   */
+  FLICKER_LAMP:  32,
+  /** 打碎后的残骸：同样占格但不发光，让玩家看得出「这盏已经打过了」 */
+  LAMP_BROKEN:   33,
 };
 
 const def = (o) => ({
@@ -115,6 +130,23 @@ BLOCKS[BLOCK.CONCRETE]  = def({ color: PALETTE.concrete, name: 'concrete', climb
 BLOCKS[BLOCK.CEILING]   = def({ color: PALETTE.ceiling,  name: 'ceiling',  climbable: true });
 BLOCKS[BLOCK.WALL_IN]   = def({ color: PALETTE.wallIn,   name: 'wall_in' });
 BLOCKS[BLOCK.ROOF]      = def({ color: PALETTE.roof,     name: 'roof' });
+
+/**
+ * 应急灯与它的残骸。
+ *
+ * solid:false —— 灯挂在天花板下（y=3），玩家不会撞到它，也不该挡子弹；
+ * 打碎它靠 lights.js 自己的射线判定，不走体素碰撞。
+ * opaque:false —— 灯不挡视线，否则亮着的灯会在敌人视野里投出一块盲区。
+ * emissive 很高：即使真光源被打掉，顶点色也要让人看出「那里有个灯」。
+ */
+BLOCKS[BLOCK.FLICKER_LAMP] = def({
+  color: 0xfff2c4, name: 'flicker_lamp', height: 0.3,
+  solid: false, opaque: false, emissive: 0.9, jitter: false,
+});
+BLOCKS[BLOCK.LAMP_BROKEN]  = def({
+  color: 0x3a3f46, name: 'lamp_broken', height: 0.3,
+  solid: false, opaque: false, emissive: 0, jitter: false,
+});
 
 export const isSolid  = (id) => BLOCKS[id].solid;
 export const isOpaque = (id) => BLOCKS[id].opaque;

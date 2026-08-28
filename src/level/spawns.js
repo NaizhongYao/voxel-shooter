@@ -2,7 +2,7 @@ import { ARCHETYPE } from '../systems/enemy.js';
 import { itemAt } from './furniture.js';
 
 /**
- * 12 个敌人的出生点池（GDD 12 章 + 10 章关卡规则）。
+ * 20 个敌人的出生点池（全难度 +30% 后的完整 tier 3 池）。
  *
  * 规则 4：约一半敌人初始朝向背对最近的门，奖励从正确方向进入的玩家。
  *
@@ -18,15 +18,14 @@ import { itemAt } from './furniture.js';
  * 完全是两种紧张感。每个敌人标一个 tier（1/2/3），main.js 按
  * `D().enemyTier` 过滤出当前难度要生成的子集：
  *
- *   tier 1（简单 10 人）：核心布置，覆盖 7 个以上房间，伏击/巡逻比例
- *                        与原版一致，保证「找得到、打得过」。
- *   tier 2（困难 13 人）：追加 3 人，补上主走廊与仓库的纵深火力。
- *   tier 3（专家 15 人）：追加 2 人，全楼铺满，含庭院教学区的巡逻者。
+ *   tier 1（简单 13 人）：核心布置 + 3 个伏击者补点，保证「找得到、打得过」。
+ *   tier 2（困难 17 人）：追加 4 人，补上主走廊与仓库的纵深火力。
+ *   tier 3（专家 20 人）：追加 3 人，全楼铺满，含庭院教学区的巡逻者。
  *
- * 分层是手工挑选、不是随机抽取 —— 随机会导致同一难度下每局房间覆盖度
- * 不一样（可能巡逻者全挤在一个区域），无法保证空间分布，也没法写死
- * 测试断言。tier 越高只是「追加」，不移除 tier 1 的任何一个，所以专家
- * 难度下永远是完整的 12 人池子。
+ * 三档相对原 10/13/15 全部 +30%。分层是手工挑选、不是随机抽取 ——
+ * 随机会导致同一难度下每局房间覆盖度不一样（可能全挤在一个区域），
+ * 无法保证空间分布，也没法写死测试断言。tier 越高只是「追加」，
+ * 不移除 tier 1 的任何一个，所以专家难度下永远是完整的 20 人池子。
  *
  * ══ 武装敌人（armored）══
  *
@@ -76,9 +75,11 @@ export const ENEMY_SPAWNS = [
   // ── 客厅（西南）：绕房间一圈的巡逻者 + 一个伏击者 ──
   // 巡逻者 tier 2（困难/专家追加），伏击者 tier 1（三档都会遇到）。
   {
-    x: 11.5, y: Y1, z: 38.5, yaw: 0,
+    x: 12.5, y: Y1, z: 38.5, yaw: 0,
     archetype: ARCHETYPE.PATROLLER, weapon: 'smg', tier: 1,
-    patrol: [[11.5, 38.5], [21.5, 38.5], [21.5, 45.5], [11.5, 45.5]],
+    // 修正：原路线西南角 (11.5,45.5) 卡在一个木箱里（家具比路线晚铺，
+    // 没人重跑过求解器），由 tools/check-level01-spawns.mjs 抓出来。
+    patrol: [[12.5, 38.5], [22.5, 38.5], [22.5, 45.5], [12.5, 45.5]],
   },
   { x: 20.5, y: Y1, z: 40.5, yaw: Math.PI / 2, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun', tier: 1 },
 
@@ -121,9 +122,10 @@ export const ENEMY_SPAWNS = [
   // 有更多掩体可以周旋，符合仓库「高潮区域」的定位）；
   // 伏击者 tier 1（简单难度就要教玩家「仓库黑暗角落也要照」）。
   {
-    x: 27.5, y: Y1, z: 19.5, yaw: 0,
+    x: 29.5, y: Y1, z: 19.5, yaw: 0,
     archetype: ARCHETYPE.PATROLLER, weapon: 'ar', tier: 1, armored: true,
-    patrol: [[27.5, 19.5], [42.5, 19.5], [42.5, 22.5], [27.5, 22.5]],
+    // 修正：原路线东端 (42.5, 22.5 附近) 被货架挡住，同上一并修。
+    patrol: [[29.5, 19.5], [36.5, 19.5], [36.5, 24.5], [29.5, 24.5]],
   },
   { x: 40.5, y: Y1, z: 17.5, yaw: Math.PI / 2, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun', tier: 1 },
 
@@ -142,20 +144,44 @@ export const ENEMY_SPAWNS = [
 
   // ── 困难/专家追加：东储、西储、南过道东段，避免「扫完南翼就找不到人」──
   {
-    x: 50.5, y: Y1, z: 20.5, yaw: Math.PI,
+    x: 46.5, y: Y1, z: 18.5, yaw: Math.PI,
     archetype: ARCHETYPE.PATROLLER, weapon: 'smg', tier: 1,
-    patrol: [[48.5, 18.5], [53.5, 18.5], [53.5, 23.5], [48.5, 23.5]],
+    // 修正：原路线东南角撞墙，由求解器重新算过。
+    patrol: [[46.5, 18.5], [55.5, 18.5], [55.5, 23.5], [46.5, 23.5]],
   },
   {
-    x: 12.5, y: Y1, z: 20.5, yaw: 0,
+    x: 10.5, y: Y1, z: 18.5, yaw: 0,
     archetype: ARCHETYPE.PATROLLER, weapon: 'ar', tier: 2,
-    patrol: [[10.5, 18.5], [17.5, 18.5], [17.5, 23.5], [10.5, 23.5]],
+    // 修正：原路线东南角撞墙，同上一并修。
+    patrol: [[10.5, 18.5], [18.5, 18.5], [18.5, 23.5], [10.5, 23.5]],
   },
   {
-    x: 48.5, y: Y1, z: 34.5, yaw: Math.PI / 2,
+    x: 47.5, y: Y1, z: 33.5, yaw: Math.PI / 2,
     archetype: ARCHETYPE.PATROLLER, weapon: 'smg', tier: 2,
-    patrol: [[42.5, 33.5], [53.5, 33.5], [53.5, 35.5], [42.5, 35.5]],
+    // 修正：原路线西端撞墙垛，环路收窄到墙垛以东的净空段。
+    patrol: [[47.5, 33.5], [53.5, 33.5], [53.5, 35.5], [47.5, 35.5]],
   },
+
+  /**
+   * ── 人数 +30%（全难度）：13 / 17 / 20 ──
+   *
+   * 全部用伏击者（AMBUSHER），不加新的巡逻路线，也不用蹲守者（SENTRY）——
+   * 本关早先就把纯蹲守者移除了：原地不动的敌人如果朝向对着墙，会整局
+   * 都在瞪墙，而且不动的敌人让整栋楼像静态靶场（见 test/combat.test.mjs
+   * 「没有原地不动的纯蹲守者」）。伏击者不需要 patrol 数组，出生点本身
+   * 就是「实测通畅」的开放格（已用 find-patrol-loops.mjs 逐格验证过），
+   * 复杂度不会因为加人而上升。
+   */
+  // tier 1 追加：书房伏击者、门厅第二伏击者、南过道东段伏击者
+  { x: 49.5, y: Y1, z: 11.5, yaw: Math.PI, archetype: ARCHETYPE.AMBUSHER, weapon: 'pistol', tier: 1 },
+  { x: 32.5, y: Y1, z: 43.5, yaw: 0, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun', tier: 1 },
+  { x: 46.5, y: Y1, z: 30.5, yaw: -Math.PI / 2, archetype: ARCHETYPE.AMBUSHER, weapon: 'smg', tier: 1 },
+
+  // tier 2 追加：仓库伏击者
+  { x: 32.5, y: Y1, z: 21.5, yaw: Math.PI / 2, archetype: ARCHETYPE.AMBUSHER, weapon: 'ar', tier: 2 },
+
+  // tier 3 追加：客厅伏击者，专家档最后一重威胁
+  { x: 13.5, y: Y1, z: 42.5, yaw: 0, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun', tier: 3 },
 ];
 
 /**

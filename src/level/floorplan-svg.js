@@ -20,6 +20,9 @@ export const LEGEND = {
   [BLOCK.CABINET]:   { s: '▥', c: '#7a6244', n: '柜子/冰箱' },
   [BLOCK.CARPET]:    { s: '', c: '#3a2c38', n: '地毯' },
   [BLOCK.LAMP]:      { s: '☀', c: '#d8a860', n: '台灯' },
+  // 可击碎的闪烁应急灯：真光源、会提高敌人探测倍率，打碎后变残骸。
+  [BLOCK.FLICKER_LAMP]: { s: '⚡', c: '#bfd4e8', n: '闪烁应急灯' },
+  [BLOCK.LAMP_BROKEN]:  { s: '×', c: '#3a3f46', n: '应急灯残骸' },
   [BLOCK.PLANT]:     { s: '❋', c: '#4a7a55', n: '盆栽' },
   [BLOCK.COUNTER]:   { s: '▭', c: '#7d838a', n: '台面' },
   [BLOCK.CHAIR]:     { s: '▪', c: '#8a6a4a', n: '椅子' },
@@ -146,6 +149,31 @@ export function renderFloorplanSvg(w, {
       if (L.s) {
         parts.push(`<text x="${px + CELL / 2}" y="${pz + CELL / 2 + 3}" font-size="8" fill="${T.textFill}" text-anchor="middle" opacity="${T.textOpacity}">${L.s}</text>`);
       }
+    }
+
+  /**
+   * 天花板下的可击碎应急灯：它们不在 y=1（挂在 y=3），所以不能混进
+   * 上面的地面家具循环。单独从 y=2..顶层扫一次，投影到同一张平面图。
+   *
+   * 普通战斗小地图不走这条渲染器（它只读 rooms），因此灯只会出现在
+   * 开发者平面图 / 简报地图 / 任务选择缩略图，不会给战斗 HUD 添杂物。
+   */
+  for (let z = b.z0; z <= b.z1; z++)
+    for (let x = b.x0; x <= b.x1; x++) {
+      let id = BLOCK.AIR;
+      for (let ly = 2; ly < w.sy; ly++) {
+        const candidate = w.get(x, ly, z);
+        if (candidate === BLOCK.FLICKER_LAMP || candidate === BLOCK.LAMP_BROKEN) {
+          id = candidate;
+          break;
+        }
+      }
+      const L = LEGEND[id];
+      if (!L) continue;
+      used.set(id, true);
+      const px = (x - b.x0) * CELL, pz = (z - b.z0) * CELL;
+      parts.push(`<rect x="${px + 1.5}" y="${pz + 1.5}" width="${CELL - 3}" height="${CELL - 3}" fill="${L.c}" rx="5.5"/>`);
+      parts.push(`<text x="${px + CELL / 2}" y="${pz + CELL / 2 + 3}" font-size="8" fill="${T.textFill}" text-anchor="middle" opacity="${T.textOpacity}">${L.s}</text>`);
     }
 
   // 门

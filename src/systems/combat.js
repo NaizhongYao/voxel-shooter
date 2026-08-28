@@ -31,6 +31,12 @@ export class Combat {
     this.onPlayerHit = null;      // 回调：(damage, zone) => void
     this.onKill = null;           // 回调：(enemy) => void
     this.onEnemyShot = null;      // 回调：(weaponSpec, distToPlayer) => void
+    /**
+     * 应急灯系统（可选，main.js 装配时挂上）。玩家的子弹可以打碎灯：
+     * 灯 solid:false 不在体素碰撞里，所以要单独做一次球体求交。
+     */
+    this.lights = null;
+    this.onLampBreak = null;      // 回调：(lamp) => void
   }
 
   /**
@@ -101,6 +107,27 @@ export class Combat {
         start.x, start.y, start.z, dir.x, dir.y, dir.z, spec.range
       );
       const wallDist = wall ? wall.dist : spec.range;
+
+      /**
+       * 1.5) 应急灯。只有玩家的子弹能打碎灯 —— 敌人打碎自己的照明没有
+       * 玩法收益，只会让关卡随机变黑。灯必须比墙更近才算命中，
+       * 否则等于隔墙打灯。
+       */
+      if (!fromEnemy && this.lights) {
+        const lampHit = this.lights.hitTest(
+          start.x, start.y, start.z, dir.x, dir.y, dir.z, wallDist
+        );
+        if (lampHit) {
+          _hitPt.copy(start).addScaledVector(dir, lampHit.dist);
+          this.fx.tracer(start, _hitPt, 0xffe6a0, spec.tracer * 0.06);
+          _norm.set(-dir.x, -dir.y, -dir.z);
+          const broke = this.lights.damage(lampHit.lamp, spec.damage);
+          // 碎玻璃：亮色碎屑，比打墙更显眼，让「打中了灯」有明确反馈
+          this.fx.impact(_hitPt, _norm, broke ? 0xfff2c4 : 0xbfd4e8, broke ? 12 : 5);
+          if (broke && this.onLampBreak) this.onLampBreak(lampHit.lamp);
+          return { hitEnemy };
+        }
+      }
 
       // 2) 目标（最近的一个）
       let target = null;
