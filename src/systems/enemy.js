@@ -89,6 +89,12 @@ function perc() {
     callRadius: PERCEPTION.callRadius * d.callRadiusMul,
     investigateTime: PERCEPTION.investigateTime * d.investigateTimeMul,
     loseTargetTime: PERCEPTION.loseTargetTime * d.loseTargetMul,
+    // ── 侵略性（难度表里的 aggression 字段，缺省值保持旧行为）──
+    hearRangeMul: d.hearRangeMul ?? 1,
+    suppressChance: d.suppressChance ?? 0,
+    suppressSpread: d.suppressSpread ?? 1.5,
+    pushChance: d.pushChance ?? 0,
+    searchRooms: d.searchRooms ?? false,
   };
 }
 
@@ -147,6 +153,10 @@ export class Enemy {
     this.searchIdx = 0;
     /** 巡逻卡死计时（秒）。超过 patrolStallLimit 就跳过当前路径点。 */
     this.patrolStall = 0;
+    /** 噪音来源点（听到枪声的位置），查房时用来判断是否继续往里推 */
+    this.searchOrigin = null;
+    /** 上次尝试开门的时间，避免每帧反复推同一扇门 */
+    this.lastDoorAt = -99;
 
     /**
      * 警戒度 0..1 —— 连续量，驱动头顶指示器的填充与颜色。
@@ -448,11 +458,19 @@ export class Enemy {
   hearNoise(x, y, z, radius, loud = false) {
     if (this.dead || this.state === STATE.COMBAT) return false;
     const dy = Math.abs(y - this.pos.y);
+    /**
+     * 听觉半径随难度放大（hearRangeMul）：专家档 1.8 倍，
+     * 一声枪响能把半栋楼的人叫过来查房 —— 这是「aggression 随难度上升」
+     * 里最先被玩家感受到的一环，比提高伤害直观得多。
+     */
+    const scaled = radius * perc().hearRangeMul;
     // 跨楼板半径衰减
-    const effective = dy > 2 ? radius * PERCEPTION.crossFloorMul : radius;
+    const effective = dy > 2 ? scaled * PERCEPTION.crossFloorMul : scaled;
     const d = Math.hypot(x - this.pos.x, y - this.pos.y, z - this.pos.z);
     if (d > effective) return false;
     this.investigateTarget = new THREE.Vector3(x, y, z);
+    // 记下噪音来源，供 doInvestigate 判断「到了以后要不要往房间深处搜」
+    this.searchOrigin = new THREE.Vector3(x, y, z);
     if (this.state === STATE.IDLE) {
       if (loud) {
         this.toAlert();
@@ -650,17 +668,34 @@ export class Enemy {
     return bestYaw;
   }
 
-  doInvestigate(dt, sees) {
+  doInvestigate(dt, sees, ctx = null, now = 0) {
     if (sees) { this.toAlert(); return; }
     this.standUp();          // 起身查看，不会蹲着走路
+    const p = perc();
+    const mv = { doors: ctx?.doors, now };
     if (this.investigateTarget) {
-      const arrived = this.moveToward(this.investigateTarget, dt, 1.5);
-      if (arrived) this.investigateTarget = null;
+      // 查房速度：难度越凶走得越快（专家档几乎是小跑着冲进来）
+      const speed = 1.5 + p.pushChance * 1.2;
+      const arrived = this.moveToward(this.investigateTarget, dt, speed, mv);
+      if (arrived) {
+        this.investigateTarget = null;
+        /**
+         * 到了噪音点还是没人 → 继续往房间深处搜（searchRooms）。
+         *
+         * 只走到噪音点就停下的话，玩家只要开完枪往房间里退两步就绝对安全 ——
+         * 敌人会站在门口环视几秒然后回去巡逻。往里推进才让「他们会来查房」
+         * 这件事真的有威胁：躲在房间角落也会被找出来。
+         */
+        if (p.searchRooms) {
+          const next = this.pickSearchPoint();
+          if (next) this.investigateTarget = next;
+        }
+      }
     } else {
-      // 到了目标点却没人：原地环视找人（不是死盯一个方向）
+      // 没有目标点：原地环视找人（不是死盯一个方向）
       this.yaw += dt * 1.4;
     }
-    if (this.stateTime > perc().investigateTime) {
+    if (this.stateTime > p.investigateTime) {
       // 调查超时 → 回到常态行为。巡逻者继续走路线，
       // 蹲守者回到岗位朝向（而不是留在原地朝着刚才乱转的方向）
       this.state = STATE.IDLE;
@@ -669,6 +704,36 @@ export class Enemy {
       this.scanTimer = 0;
       if (this.patrol) this.patrolIdx = this.nearestPatrolIndex();
     }
+  }
+
+  /**
+   * 查房时的下一个搜索点：朝当前朝向的前方扇区里挑一个「走得到、且离
+   * 噪音源不太远」的开阔点。
+   *
+   * 不做真正的寻路（本作没有导航网格），但这已经足够让搜索看起来
+   * 有目的：敌人会沿着能走的方向往房间里推，而不是站在门口原地转圈。
+   * 离噪音源超过 14 vox 就不再往外扩 —— 否则敌人会一路搜到地图另一头，
+   * 玩家再也遇不到他，反而降低压迫感。
+   */
+  pickSearchPoint() {
+    const origin = this.searchOrigin ?? this.pos;
+    let best = null, bestScore = -Infinity;
+    for (let i = 0; i < 12; i++) {
+      // 以当前朝向为中心撒开，偏向正前方
+      const ang = this.yaw + (Math.random() - 0.5) * Math.PI * 1.2;
+      const dist = 3 + Math.random() * 5;
+      const tx = this.pos.x - Math.sin(ang) * dist;
+      const tz = this.pos.z - Math.cos(ang) * dist;
+      if (this.blockedAt(tx, tz)) continue;
+      // 视线必须通畅，否则「走得到」只是错觉（会卡在墙角）
+      if (this.world.lineBlocked(this.pos.x, this.eyeY, this.pos.z, tx, this.eyeY, tz)) continue;
+      const fromOrigin = Math.hypot(tx - origin.x, tz - origin.z);
+      if (fromOrigin > 14) continue;
+      // 越远越好（推进得更深），但离噪音源太远要扣分
+      const score = dist - fromOrigin * 0.35;
+      if (score > bestScore) { bestScore = score; best = new THREE.Vector3(tx, this.pos.y, tz); }
+    }
+    return best;
   }
 
   /** 回到巡逻路线时，从最近的路径点接上（不要横穿整个楼去追第 0 点） */
@@ -684,6 +749,7 @@ export class Enemy {
 
   doCombat(dt, now, sees, ctx) {
     const { player, combat, flashlight } = ctx;
+    const p = perc();
 
     if (!sees) {
       // 看不见玩家时只能朝「最后看见的位置」，不能跟着真实坐标转。
@@ -691,16 +757,43 @@ export class Enemy {
       if (this.hasLastSeen) this.faceToward(this.lastSeenPlayer, dt, 4);
 
       /**
+       * ── 盲射压制 ──
+       *
+       * 看不见人也朝最后已知方向泼子弹。这是 aggression 里玩家感受最强的
+       * 一环：躲进掩体不再等于安全下限，弹雨会持续砸在掩体上，逼玩家换位。
+       *
+       * 关键约束：必须真的有视线才可能命中（enemyShoot 走同一套射线），
+       * 所以这不是穿墙作弊 —— 打在墙上就是打在墙上，玩家听到的是
+       * 「他在压制」，而不是莫名其妙掉血。散布额外放大，命中靠运气。
+       */
+      if (p.suppressChance > 0 && this.hasLastSeen
+          && now >= this.nextShotAt && this.weapon.canFire(now)
+          && !this.weapon.reloading && !this.weapon.isEmpty
+          && Math.random() < p.suppressChance) {
+        this.weapon.consume(now);
+        combat.enemyShoot(this, player, now, {
+          // 朝「最后看见的位置」的大致方向，而不是玩家真实坐标
+          aimAt: this.lastSeenPlayer,
+          extraSpread: p.suppressSpread,
+        });
+        const rof = this.weapon.spec.rof * D().rofMul;
+        this.nextShotAt = now + 1 / rof
+          + (this.weapon.spec.auto ? 0 : PERCEPTION.burstGap / D().rofMul);
+      }
+      if (this.weapon.isEmpty) this.weapon.startReload(now);
+
+      /**
        * 脱战时间。关灯会大幅缩短它 —— 玩家躲进掩体并关灯之后，
        * 敌人放弃锁定的速度快一倍多。这是「关手电降低 alert」在
        * 状态机层面的体现：不只是指示器数字降下去，敌人的行为真的变了。
        */
-      let lose = perc().loseTargetTime;
+      let lose = p.loseTargetTime;
       if (flashlight && !flashlight.on) lose *= PERCEPTION.darkLoseTargetMul;
 
       if (this.stateTime > lose && this.hasLastSeen) {
         // 去最后看见的位置搜索，而不是一直站着瞄
         this.investigateTarget = this.lastSeenPlayer.clone();
+        this.searchOrigin = this.lastSeenPlayer.clone();
         this.state = STATE.INVESTIGATE;
         this.stateTime = 0;
       }
@@ -709,6 +802,21 @@ export class Enemy {
 
     // 只有真正看见时才精确跟枪
     this.faceTarget(player, dt, 9);
+
+    /**
+     * ── 主动推进 ──
+     *
+     * 站桩对射对玩家最有利：距离固定、掩体固定，交火变成纯粹的比手速。
+     * 让敌人边打边压上来（保留 4 vox 的交火距离，不会贴脸糊成一团），
+     * 玩家必须持续调整站位。pushChance 是每帧的推进意愿，专家档 0.8
+     * 意味着几乎一直在压上来。
+     */
+    if (p.pushChance > 0 && Math.random() < p.pushChance) {
+      const gap = Math.hypot(player.pos.x - this.pos.x, player.pos.z - this.pos.z);
+      if (gap > 4) {
+        this.moveToward(player.pos, dt, 1.6 + p.pushChance, { doors: ctx.doors, now });
+      }
+    }
 
     // 换弹
     if (this.weapon.isEmpty) { this.weapon.startReload(now); return; }
@@ -756,8 +864,13 @@ export class Enemy {
     this.yaw += angleDiff(Math.atan2(-dx, -dz), this.yaw) * Math.min(1, dt * rate);
   }
 
-  /** 朝目标走一步，返回是否已到达。会做简单的墙体规避 */
-  moveToward(target, dt, speed) {
+  /**
+   * 朝目标走一步，返回是否已到达。会做简单的墙体规避。
+   *
+   * @param opts.doors DoorManager；给了就会在被挡住时尝试开门
+   * @param opts.now   当前时间（开门防抖用）
+   */
+  moveToward(target, dt, speed, opts = null) {
     const dx = target.x - this.pos.x, dz = target.z - this.pos.z;
     const d = Math.hypot(dx, dz);
     if (d < 0.6) return true;
@@ -771,6 +884,15 @@ export class Enemy {
     const stepX = nx * speed * dt, stepZ = nz * speed * dt;
     // 分轴推进，撞墙则只走另一轴（沿墙滑行）
     const px = this.pos.x, pz = this.pos.z;
+    const hitX = this.blockedAt(this.pos.x + stepX, this.pos.z);
+    const hitZ = this.blockedAt(this.pos.x, this.pos.z + stepZ);
+    /**
+     * 被挡住 → 先看看挡路的是不是门。是门就推开，这一帧不移动
+     * （门刚变成空气，下一帧自然走进去），玩家看到的是「他推门进来了」。
+     */
+    if ((hitX || hitZ) && opts?.doors) {
+      this.tryOpenDoor(opts.doors, opts.now ?? 0, nx, nz);
+    }
     if (!this.blockedAt(this.pos.x + stepX, this.pos.z)) this.pos.x += stepX;
     if (!this.blockedAt(this.pos.x, this.pos.z + stepZ)) this.pos.z += stepZ;
     // 记录实际位移速度，让腿部摆动与真实移动同步（撞墙时腿会停下）
@@ -791,6 +913,36 @@ export class Enemy {
       x - R, y + 0.05, z - R,
       x + R, y + this.height - 0.05, z + R
     );
+  }
+
+  /**
+   * 挡在前面的是门就推开它，让敌人能自然地进出房间。
+   *
+   * ══ 为什么必须有这个 ══
+   *
+   * 门在体素网格里是实心方块，moveToward 的分轴推进只会「撞墙则沿另一轴
+   * 滑行」。没有开门能力时，敌人搜到关着的门前就开始贴着门板左右横滑，
+   * 玩家看到的是一个卡在门口抽搐的人 —— 而且关着的门等于把整个搜索
+   * 区域锁死，「听见声音会来查房」这件事在门后完全无法兑现。
+   *
+   * 只在真的被门挡住时才开（不是路过就开），开完记一个时间戳防抖，
+   * 免得同一帧里反复 toggle 出机关枪一样的开门声。
+   *
+   * @param doors DoorManager（由 ctx 传入；没有就直接返回 false）
+   * @returns 是否开了门
+   */
+  tryOpenDoor(doors, now, dirX, dirZ) {
+    if (!doors) return false;
+    if (now - this.lastDoorAt < 0.8) return false;
+    // 朝移动方向前探一步，找那一格上的门
+    const probeX = this.pos.x + dirX * 0.7;
+    const probeZ = this.pos.z + dirZ * 0.7;
+    const door = doors.nearest(probeX, this.pos.y + 1, probeZ, 1.3);
+    if (!door || door.open) return false;
+    door.setOpen(true);
+    door.snap();
+    this.lastDoorAt = now;
+    return true;
   }
 
   /**

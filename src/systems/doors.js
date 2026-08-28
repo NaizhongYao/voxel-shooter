@@ -3,8 +3,7 @@ import { PALETTE } from '../config.js';
 import { BLOCK } from '../voxel/blocks.js';
 
 /**
- * 门：一格门洞里的**双开门** —— 两片 0.5 格宽 × 2 格高 × 0.14 厚的琥珀色
- * 扁方块，铰链分别在门洞的两条侧边，开门时从中间向两侧各转 90°。
+ * 门：**铰链贴左右墙垛的双开门**，向室内侧开。
  * 没有铰链模型、没有把手、没有蒙皮（GDD 11 章）。
  *
  * 关闭时挡光挡视线挡子弹（往体素网格里写 BLOCK.DOOR），开启时移除。
@@ -17,36 +16,65 @@ import { BLOCK } from '../voxel/blocks.js';
  * 现在写的是 BLOCK.DOOR（solid + opaque 但 render:false），
  * 挡住的职责归体素，外观的职责归门板网格，互不遮蔽。
  *
- * ══ 双开门的几何（改数值前先看这里）══
+ * ══ 相邻门格必须合并成「一个门洞」══
  *
- * three.js 绕 +y 旋转 θ：x' = x·cosθ + z·sinθ，z' = −x·sinθ + z·cosθ
+ * 主入口这类宽门洞在关卡里是**两个相邻的门格**（如 [[31,47],[32,47]]）。
+ * 如果每格各自劈成一对门板，就会有两条铰链落在整个门洞的正中间 ——
+ * 关着时中缝多一条竖线，开着时两片门板直接立在通道中央挡路。
  *
- * 门洞格是 (gx, gz)，占 1×1。双开门把这一格从中线劈成两半：
+ * 所以 DoorManager 先把连续的门格并成一组，每组**只有两扇**门板，
+ * 铰链钉在整个门洞最外侧的两条竖边上，也就是紧贴左右墙垛。
+ * 每扇宽度 = 门洞总宽 / 2（1 格洞 → 0.5，2 格洞 → 1.0）。
+ *
+ * ══ 旋转几何（改数值前先看这里）══
+ *
+ * three.js 绕 +y 旋转 θ：x' = lx·cosθ + lz·sinθ，z' = −lx·sinθ + lz·cosθ
+ *
+ * 铰链组的原点放在「门洞外侧竖边 × 门板中面」上，门板局部只沿展开轴偏移
+ * 半个扇宽（另一轴为 0）。于是 θ=±90° 时门板正好绕竖边扫进室内、
+ * 平贴在门洞侧壁上，通道完全净空。
  *
  * · through='z'（门洞沿 z 贯穿，墙沿 x 延伸）→ 门板沿 x 展开、z 方向薄
- *     左扇：铰链在 x=gx 边，局部中心 (+0.25, 0)，θ 从 0 → −90°
- *     右扇：铰链在 x=gx+1 边，局部中心 (−0.25, 0)，θ 从 0 → +90°
- *     两扇各自旋到与墙面垂直（贴在门洞两侧的墙垛上），通道完全净空。
+ *     室内在 z−1 侧（与关卡 carveDoor 的约定一致），两扇都朝 −z 扫。
+ *     左扇铰链 x=x0（局部 +w/2）→ θ:0→+90°
+ *     右扇铰链 x=x0+span（局部 −w/2）→ θ:0→−90°
  *
  * · through='x'（门洞沿 x 贯穿，墙沿 z 延伸）→ 门板沿 z 展开、x 方向薄
- *     左扇：铰链在 z=gz 边，局部中心 (0, +0.25)，θ 从 0 → +90°
- *     右扇：铰链在 z=gz+1 边，局部中心 (0, −0.25)，θ 从 0 → −90°
+ *     室内在 x−1 侧，两扇都朝 −x 扫。
+ *     左扇铰链 z=z0（局部 +w/2）→ θ:0→−90°
+ *     右扇铰链 z=z0+span（局部 −w/2）→ θ:0→+90°
  *
- * 双开门的关键好处：门板旋出后落在**门洞自身的两侧**（也就是墙厚方向的
- * 侧壁上），不再需要「铰链侧那一格必须是房间净空」这个前提 ——
- * 单开门时代那条约束正是「门打不开 / 门堵住通道」的来源。
+ * 两扇的 sign 相反，但因为铰链分居门洞两端，开门后**都落在室内一侧**，
+ * 这正是真实双开门的行为。
  */
 
 const DOOR_THICK = 0.14;
 const OPEN_ANGLE = Math.PI / 2;
 const OPEN_TIME = 0.35;          // 推门耗时
 const DOOR_H = 2;
-/** 每扇门板的宽度：一格门洞对半分 */
-const LEAF_W = 0.5;
-/** 门板沿自身薄轴的微小内缩，避免与墙面共面导致 z-fighting */
-const FACE_INSET = DOOR_THICK / 2 + 0.01;
+/**
+ * 门板沿薄轴放在门格正中央（0.5 = 格心）。
+ *
+ * ══ 为什么必须居中，不能贴一侧 ══
+ *
+ * 曾经这里是 `DOOR_THICK / 2 + 0.01`，意思是「贴着门格靠小坐标那一面，
+ * 再内缩一点躲开 z-fighting」。但门洞贯穿的是 2 格厚的墙：门板贴在靠近
+ * 一侧的那 0.08 处，从另一面看过去，门板前面还留着将近一整格的空腔，
+ * 而空腔两侧的墙面因为相邻格是 DOOR（render:false，不算不透光满高块）
+ * 并没有被剔除掉 —— 于是从背面看，视线沿着这条缝越过门板边缘直接穿进
+ * 隔壁房间。表现就是「同一扇门，一面正常、另一面能透视」。
+ *
+ * 居中之后门板在格内前后各留 0.43 的余量，两面看到的几何完全对称，
+ * 也不与任何墙面共面，z-fighting 同样不会发生。
+ */
+const FACE_INSET = 0.5;
 
 export class Door {
+  /**
+   * @param spec { x, y, z, through, thick, span? }
+   *   span = 门洞沿展开轴的格数（1 = 单格洞，2 = 主入口那种宽洞）。
+   *   (x,z) 永远是门洞在展开轴上最小坐标的那一格。
+   */
   constructor(scene, world, spec) {
     this.world = world;
     this.gx = spec.x; this.gy = spec.y; this.gz = spec.z;
@@ -59,12 +87,16 @@ export class Door {
      */
     this.through = spec.through ?? this.inferThrough();
     this.thick = spec.thick ?? 1;
+    /** 门洞总宽（格）。相邻门格被 DoorManager 合并后 span 才会 >1。 */
+    this.span = spec.span ?? 1;
 
     // 门洞沿 z 贯穿 ⇒ 墙沿 x 延伸 ⇒ 门板宽度在 x 轴上
     const widthOnX = this.through === 'z';
+    /** 每扇门板的宽度：整个门洞对半分（1 格洞 → 0.5，2 格洞 → 1.0） */
+    const leafW = this.span / 2;
     const geo = widthOnX
-      ? new THREE.BoxGeometry(LEAF_W, DOOR_H, DOOR_THICK)
-      : new THREE.BoxGeometry(DOOR_THICK, DOOR_H, LEAF_W);
+      ? new THREE.BoxGeometry(leafW, DOOR_H, DOOR_THICK)
+      : new THREE.BoxGeometry(DOOR_THICK, DOOR_H, leafW);
 
     // 双面可见：开到一半时从背面看不能变成空洞
     const mat = new THREE.MeshLambertMaterial({
@@ -72,8 +104,9 @@ export class Door {
     });
 
     /**
-     * 双开门：两个铰链组，分别钉在门洞的两条侧边，向相反方向旋转。
-     * leaves[i] = { pivot, mesh, sign }，sign 决定该扇的旋转方向。
+     * 双开门：两个铰链组，钉在**整个门洞最外侧**的两条竖边（紧贴左右墙垛），
+     * 向相反方向各转 90°，开门后都落在室内一侧。
+     * leaves[i] = { pivot, mesh, sign }。
      */
     this.leaves = [];
     const mkLeaf = (pivotX, pivotZ, localX, localZ, sign) => {
@@ -88,18 +121,45 @@ export class Door {
       this.leaves.push({ pivot, mesh, sign });
     };
 
+    /**
+     * 铰链必须落在门板**自己的竖边**上，而且是整个门洞最外侧的那两条边
+     * （紧贴左右墙垛）。
+     *
+     * 之前把铰链原点放在门格角上、局部偏移同时给了展开轴和厚度轴，
+     * 结果门板是绕着「角点」扫的：开到 90° 后两片停在门洞跨度的中间
+     * （2 格宽门洞里停在 x=31.5 与 x=32.5），中间只剩 0.86 的缝 ——
+     * 玩家几乎过不去，也就是截图里两片门板立在通道中央的样子。
+     *
+     * 正确做法：铰链原点 = (最外侧竖边, 门板厚度轴中心)，局部偏移**只**沿
+     * 展开轴给半个扇宽。这样 θ=±90° 时门板绕自己的边扫进室内，
+     * 停在门洞最边上，跨度完全让开。
+     */
+    const halfLeaf = leafW / 2;
     if (widthOnX) {
-      // 门板沿 x 展开、z 薄：铰链在 x=gx 与 x=gx+1 两条竖边
-      mkLeaf(this.gx,     this.gz, LEAF_W / 2,  FACE_INSET, -1);
-      mkLeaf(this.gx + 1, this.gz, -LEAF_W / 2, FACE_INSET,  1);
+      // 门洞沿 x 展开、门板在 z 上薄：铰链竖边在 x=gx 与 x=gx+span，
+      // 位于门格厚度轴中心 z=gz+0.5。室内在 z−1 侧，两扇都朝 −z 扫。
+      mkLeaf(this.gx,             this.gz + FACE_INSET,  halfLeaf, 0,  1);
+      mkLeaf(this.gx + this.span, this.gz + FACE_INSET, -halfLeaf, 0, -1);
     } else {
-      // 门板沿 z 展开、x 薄：铰链在 z=gz 与 z=gz+1 两条竖边
-      mkLeaf(this.gx, this.gz,     FACE_INSET,  LEAF_W / 2,  1);
-      mkLeaf(this.gx, this.gz + 1, FACE_INSET, -LEAF_W / 2, -1);
+      // 门洞沿 z 展开、门板在 x 上薄：铰链竖边在 z=gz 与 z=gz+span，
+      // 位于 x=gx+0.5。室内在 x−1 侧，两扇都朝 −x 扫。
+      mkLeaf(this.gx + FACE_INSET, this.gz,             0,  halfLeaf, -1);
+      mkLeaf(this.gx + FACE_INSET, this.gz + this.span, 0, -halfLeaf,  1);
     }
 
     // 关门状态：往网格里写 BLOCK.DOOR，挡住一切但不画整格立方体
     this.applyBlocking(true);
+  }
+
+  /** 门洞覆盖的全部格坐标（span 可能 >1） */
+  cells() {
+    const out = [];
+    for (let i = 0; i < this.span; i++) {
+      out.push(this.through === 'z'
+        ? { x: this.gx + i, z: this.gz }
+        : { x: this.gx, z: this.gz + i });
+    }
+    return out;
   }
 
   /** 没有 through 信息时，从两侧墙体反推门洞方向 */
@@ -119,15 +179,21 @@ export class Door {
    * 那是给玩家站的门槛空间；堵上就等于门有 2 格厚，开门后照样过不去。
    */
   applyBlocking(blocking) {
-    for (let y = this.gy; y < this.gy + DOOR_H; y++) {
-      this.world.set(this.gx, y, this.gz, blocking ? BLOCK.DOOR : BLOCK.AIR);
+    for (const c of this.cells()) {
+      for (let y = this.gy; y < this.gy + DOOR_H; y++) {
+        this.world.set(c.x, y, c.z, blocking ? BLOCK.DOOR : BLOCK.AIR);
+      }
+      // 门框标记留在底格（开门后恢复，供 AI 寻路识别通道）
+      if (!blocking) this.world.set(c.x, this.gy, c.z, BLOCK.DOORFRAME);
     }
-    // 门框标记留在底格（开门后恢复，供 AI 寻路识别通道）
-    if (!blocking) this.world.set(this.gx, this.gy, this.gz, BLOCK.DOORFRAME);
   }
 
+  /** 门洞几何中心（宽门洞取整跨中点，交互距离判定才不偏向一侧） */
   center() {
-    return { x: this.gx + 0.5, y: this.gy + 1, z: this.gz + 0.5 };
+    const half = this.span / 2;
+    return this.through === 'z'
+      ? { x: this.gx + half, y: this.gy + 1, z: this.gz + 0.5 }
+      : { x: this.gx + 0.5,  y: this.gy + 1, z: this.gz + half };
   }
 
   distanceTo(px, py, pz) {
@@ -153,10 +219,12 @@ export class Door {
       const p = a.pos;
       // 垂直方向：实体必须与门板的高度区间重叠
       if (p.y > this.gy + DOOR_H || p.y + (a.height ?? 1.8) < this.gy) continue;
-      // 水平方向：实体的圆柱与门格（1×1）是否相交
+      // 水平方向：实体的圆柱与整个门洞矩形（span×1）是否相交
       const r = a.radius ?? 0.3;
-      const cx = Math.max(this.gx, Math.min(p.x, this.gx + 1));
-      const cz = Math.max(this.gz, Math.min(p.z, this.gz + 1));
+      const w = this.through === 'z' ? this.span : 1;
+      const d = this.through === 'z' ? 1 : this.span;
+      const cx = Math.max(this.gx, Math.min(p.x, this.gx + w));
+      const cz = Math.max(this.gz, Math.min(p.z, this.gz + d));
       if (Math.hypot(p.x - cx, p.z - cz) < r) return true;
     }
     return false;
@@ -184,13 +252,14 @@ export class Door {
   }
 
   /**
-   * 门板完全敞开后所占的格坐标。
-   *
-   * 双开门的两扇都落在门洞自身的侧壁上（墙厚方向），不侵入任何房间格，
-   * 所以这里返回门洞格本身 —— 保留这个方法是为了兼容既有测试与调用方。
+   * 门板完全敞开后落在哪一格 —— 铰链在门洞两端、门板朝室内扫，
+   * 所以占的是室内侧那一格（through='z' → z−1；through='x' → x−1）。
+   * 关卡的 carveDoor 已经保证那一侧是房间净空。
    */
   swingCell() {
-    return { x: this.gx, z: this.gz };
+    return this.through === 'z'
+      ? { x: this.gx, z: this.gz - 1 }
+      : { x: this.gx - 1, z: this.gz };
   }
 
   update(dt) {
@@ -203,9 +272,48 @@ export class Door {
   }
 }
 
+/**
+ * 把关卡登记的门格合并成「门洞」。
+ *
+ * 关卡里宽门洞是逐格 carveDoor 出来的（主入口 = [[31,47],[32,47]]），
+ * 但那是**一个**门洞、只该有两扇门板。不合并的话每格各自劈成一对，
+ * 整个门洞正中间会多出两条铰链 —— 关着时中缝多一条线，开着时门板
+ * 立在通道中央挡路，正是要修的那个问题。
+ *
+ * 合并规则：through 与 thick 相同、且沿展开轴（through='z' 时是 x）
+ * 坐标连续的门格，并成一条 span。垂直于展开轴的坐标必须一致。
+ */
+function groupDoorSpecs(specs) {
+  const groups = [];
+  const sorted = [...specs].sort((a, b) => {
+    if (a.through !== b.through) return a.through < b.through ? -1 : 1;
+    // 沿展开轴排序：through='z' 沿 x 展开，through='x' 沿 z 展开
+    const [aMain, aCross] = a.through === 'z' ? [a.x, a.z] : [a.z, a.x];
+    const [bMain, bCross] = b.through === 'z' ? [b.x, b.z] : [b.z, b.x];
+    return aCross - bCross || aMain - bMain;
+  });
+  for (const s of sorted) {
+    const last = groups[groups.length - 1];
+    if (last) {
+      const sameKind = last.through === s.through && last.thick === s.thick;
+      const alongZ = s.through === 'z';
+      // 展开轴上正好接续，且另一轴与 y 完全一致 → 并入上一组
+      const contiguous = alongZ
+        ? (s.z === last.z && s.x === last.x + last.span)
+        : (s.x === last.x && s.z === last.z + last.span);
+      if (sameKind && contiguous && last.y === s.y) {
+        last.span += 1;
+        continue;
+      }
+    }
+    groups.push({ ...s, span: 1 });
+  }
+  return groups;
+}
+
 export class DoorManager {
   constructor(scene, world, doorSpecs) {
-    this.doors = doorSpecs.map((s) => new Door(scene, world, s));
+    this.doors = groupDoorSpecs(doorSpecs).map((s) => new Door(scene, world, s));
   }
 
   /** 找出玩家附近可交互的门 */
@@ -228,7 +336,9 @@ export class DoorManager {
   openAt(cells) {
     let n = 0;
     for (const d of this.doors) {
-      if (cells.some(([x, z]) => d.gx === x && d.gz === z)) {
+      // 宽门洞被合并成一扇门，任意一格命中就算命中（主入口两格 → 一扇门）
+      const own = d.cells();
+      if (cells.some(([x, z]) => own.some((c) => c.x === x && c.z === z))) {
         d.setOpen(true);
         d.snap();
         n++;

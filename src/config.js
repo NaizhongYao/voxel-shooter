@@ -238,14 +238,25 @@ export const PLAYER = {
  *
  * ARMOR_ABSORB：武装敌人的护甲吸收比例，与玩家侧 PLAYER.armorAbsorb
  * 同源同理（护甲先扣、生命后扣，留一点渗透伤害保证有反馈）。
- * ARMOR_MAX：武装敌人的护甲值，约等于挨 1–2 枪 AR 才能击穿。
- * ARMORED_HP_MULT：武装敌人的生命倍率。×2 让「爆头」不再是一发的事：
- * 护甲破掉之后，AR 还需要两枪爆头才放倒 —— 重甲目标必须持续集火。
+ *
+ * ══ 爆头规则：普通一枪，精英两枪 ══
+ *
+ * 普通敌人（无护甲）任意武器爆头必死 —— 这是本作的核心奖励，
+ * 「先看见先开枪」的价值全靠它兑现，任何难度都不打折。
+ *
+ * 精英（armored）明确要两枪，而且是算出来的硬保证、不是概率：
+ * ARMOR_MAX = 60 配 85% 吸收 → 护甲能挡掉约 70 点入射伤害；
+ * ARMORED_HP_MULT = 3 → 困难档生命 60 变 180。
+ *   DMR 爆头 195：首发护甲吃 60、渗透 135 → 剩 45 血，不死；
+ *                 第二发 195 全额进生命 → 倒。恰好两枪。
+ *   AR  爆头 63 ：首发只渗透 ~9，需要更多枪 —— 那是「口径不够」
+ *                 的合理代价，玩家能从掉血反馈里读出来。
+ * 生命同时被 D().enemyHp 缩放，所以专家档的精英更厚（70×3=210）。
  */
 export const NOISE_SPIKE_THRESHOLD = 38;
 export const ARMOR_ABSORB = 0.85;
-export const ARMOR_MAX = 40;
-export const ARMORED_HP_MULT = 2;
+export const ARMOR_MAX = 60;
+export const ARMORED_HP_MULT = 3;
 
 export const GRENADES = {
   he: {
@@ -331,5 +342,8 @@ export const INPUT = {
   mute: ['KeyM'],
   // N 紧挨 M：M 管全部音效，N 只切背景音乐
   music: ['KeyN'],
+  // Tab 切小地图。input.js 在指针锁定时已经吞掉 Tab 的默认行为（焦点跳转），
+  // 所以按它不会把焦点甩到浏览器 UI 上。
+  minimap: ['Tab'],
   debug: ['Backquote'],
 };

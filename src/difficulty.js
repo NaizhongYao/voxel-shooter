@@ -43,6 +43,24 @@ export const DIFFICULTIES = {
     investigateTimeMul: 0.7,     // 更快放弃搜索
     loseTargetMul: 0.6,          // 更快脱战
 
+    /**
+     * ── 侵略性（aggression）──
+     *
+     * hearRangeMul   听觉半径倍率。枪声/爆炸的传播距离 ×这个值，
+     *                决定「多远之外的人会过来查房」。
+     * suppressChance 看不见玩家时朝最后已知位置盲射的概率（每次射击机会）。
+     *                盲射是压制，不是作弊：弹道有很大的散布，打中是运气，
+     *                但它逼玩家不敢一直待在同一个掩体后面。
+     * suppressSpread 盲射的额外散布（vox）。越大越像「泼子弹」而不是点杀。
+     * pushChance     战斗中主动向玩家推进（而不是站桩对射）的概率。
+     * searchRooms    调查时是否推进到房间深处搜索（而不是走到噪音点就停）。
+     */
+    hearRangeMul: 0.7,
+    suppressChance: 0.0,         // 简单档不盲射 —— 新手需要安全的掩体
+    suppressSpread: 2.0,
+    pushChance: 0.15,
+    searchRooms: false,
+
     // ── 情报（HUD）──
     /** 状态指示器可见距离（vox）。简单难度几乎全图可见。 */
     indicatorRange: 60,
@@ -81,6 +99,13 @@ export const DIFFICULTIES = {
     investigateTimeMul: 1.0,
     loseTargetMul: 1.0,
 
+    // ── 侵略性（见 easy 档的字段说明）──
+    hearRangeMul: 1.0,
+    suppressChance: 0.35,        // 三次射击机会里约一次盲射压制
+    suppressSpread: 1.5,
+    pushChance: 0.45,
+    searchRooms: true,           // 会真的走进房间搜人
+
     indicatorRange: 28,
     showIdleIndicator: false,    // 只有被注意到才显示
     showFacingHint: false,
@@ -92,7 +117,7 @@ export const DIFFICULTIES = {
     id: 'expert',
     name: '专家',
     subtitle: 'GHOST',
-    desc: '几乎没有情报。敌人视野远、反应快、瞄得准。必须关灯潜行。',
+    desc: '几乎没有情报。敌人听得远、疯狂压制、会推进搜房。必须关灯潜行。',
     color: 0xe5484d,
 
     hpMax: 80,
@@ -109,6 +134,19 @@ export const DIFFICULTIES = {
     callRadiusMul: 1.4,          // 一个发现你，半栋楼都知道
     investigateTimeMul: 1.5,     // 搜得更久
     loseTargetMul: 1.6,          // 更难脱战
+
+    /**
+     * ── 侵略性：GHOST 档是最凶的（见 easy 档的字段说明）──
+     *
+     * 听觉 1.8 倍 + 75% 盲射概率 + 主动推进，效果是「开一枪，半栋楼的人
+     * 朝这边压过来，还没看见你就已经在往你的掩体泼子弹」。
+     * 这一档不允许站桩对枪 —— 必须关灯、换位、逐个吃掉。
+     */
+    hearRangeMul: 1.8,
+    suppressChance: 0.75,
+    suppressSpread: 1.1,         // 压制得更密，散布反而更小
+    pushChance: 0.8,
+    searchRooms: true,
 
     indicatorRange: 14,          // 只有很近才看得到状态
     showIdleIndicator: false,

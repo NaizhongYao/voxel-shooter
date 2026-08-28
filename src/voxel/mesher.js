@@ -170,17 +170,32 @@ export class VoxelMesher {
 
           for (const face of FACES) {
             const [dx, dy, dz] = face.dir;
-            // 面剔除：相邻格不透光且满高，则此面不可见
+            /**
+             * 面剔除：相邻格不透光且满高，则此面不可见。
+             *
+             * ══ 相邻格还必须真的会被渲染 ══
+             *
+             * BLOCK.DOOR 是 opaque:true / height:1 但 render:false —— 它负责
+             * 挡视线挡子弹，几何却由 Door 类那两扇薄门板（0.14 厚）单独画。
+             * 只看 isOpaque 的话，门洞四周的墙面全部被当成「被门挡住了」而
+             * 剔掉，可门格自己又不画任何面，于是那里留下一圈没有内壁的空腔：
+             * 从门的一侧看，视线擦过薄门板边缘直接穿进隔壁房间。
+             * 「同一扇门一面正常、另一面透视」就是这么来的。
+             *
+             * 加上 canHide 之后，只有真正会画出实体面的方块才允许剔除邻面。
+             */
+            const canHide = (nid) =>
+              nid !== BLOCK.AIR && isOpaque(nid) && BLOCKS[nid].render;
             if (h >= 1 && !(dy !== 0 && h < 1)) {
               const nid = w.get(x + dx, y + dy, z + dz);
-              if (nid !== BLOCK.AIR && isOpaque(nid) && topOf(nid) >= 1) continue;
+              if (canHide(nid) && topOf(nid) >= 1) continue;
             } else if (dy === 0) {
               // 矮方块的侧面：只有相邻方块同样高或更高才剔除
               const nid = w.get(x + dx, y + dy, z + dz);
-              if (nid !== BLOCK.AIR && isOpaque(nid) && topOf(nid) >= h) continue;
+              if (canHide(nid) && topOf(nid) >= h) continue;
             } else if (dy === -1) {
               const nid = w.get(x, y - 1, z);
-              if (nid !== BLOCK.AIR && isOpaque(nid) && topOf(nid) >= 1) continue;
+              if (canHide(nid) && topOf(nid) >= 1) continue;
             }
 
             // 反射率：基色 × 面明暗 × 每方块抖动

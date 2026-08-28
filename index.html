@@ -69,7 +69,32 @@
   #objective .lbl{ font-size:.62rem; letter-spacing:.28em; color:var(--muted); }
   #enemy-count{ font-size:1.3rem; font-weight:700; color:var(--threat); letter-spacing:.08em; }
 
-  /* 右上：调试 */
+  /**
+   * 右上：小地图。只画房间轮廓 + 门 + 撤离点 + 玩家箭头。
+   * 不画敌人，也不画家具 —— 数据源是关卡的房间矩形，不是体素网格，
+   * 所以「不泄露敌情」是结构保证，不靠自觉（见 src/level/minimap.js）。
+   */
+  #minimap{ position:absolute; right:22px; top:22px; width:196px;
+    background:var(--panel); border:1px solid var(--rule); padding:8px 9px 6px; }
+  #minimap.off{ display:none; }
+  #mm-head{ display:flex; justify-content:space-between; align-items:baseline;
+    font-size:.56rem; letter-spacing:.2em; color:var(--muted); margin-bottom:6px; }
+  #mm-here{ color:var(--amber); letter-spacing:.1em; }
+  #mm-box{ position:relative; width:100%; aspect-ratio:1/1; }
+  .mm-svg{ display:block; width:100%; height:100%; overflow:visible; }
+  .mm-bld{ fill:rgba(70,84,104,.30); stroke:rgba(126,142,166,.45); stroke-width:.5; }
+  .mm-room{ fill:rgba(120,140,170,.34); stroke:rgba(150,170,200,.55); stroke-width:.35; }
+  .mm-label{ fill:rgba(214,222,235,.62); font-size:2.5px; text-anchor:middle;
+    font-family:var(--mono); letter-spacing:.03em; }
+  .mm-door{ fill:rgba(63,185,111,.85); }
+  .mm-exit{ fill:none; stroke:var(--amber); stroke-width:.6; }
+  .mm-exit-t{ fill:var(--amber); font-size:2.4px; text-anchor:middle;
+    font-family:var(--mono); font-weight:700; }
+  .mm-player > path{ fill:var(--amber); stroke:#1a1206; stroke-width:.35; }
+  #mm-foot{ margin-top:5px; font-size:.52rem; letter-spacing:.14em;
+    color:var(--muted); text-align:right; }
+
+  /* 右上：调试（与小地图同一角，靠 top 错开；反引号唤出时才占位） */
   #stats{ position:absolute; right:22px; top:22px; background:var(--panel);
     border:1px solid var(--rule); padding:11px 13px; font-size:.7rem;
     line-height:1.85; letter-spacing:.05em; min-width:186px; }
@@ -327,6 +352,13 @@
   <div id="objective">
     <div class="lbl">剩余敌人</div>
     <div id="enemy-count">– / –</div>
+  </div>
+
+  <!-- 小地图：SVG 由 main.js 从关卡房间数据生成（不含敌人与家具） -->
+  <div id="minimap">
+    <div id="mm-head"><span>MAP</span><span id="mm-here">—</span></div>
+    <div id="mm-box"></div>
+    <div id="mm-foot">TAB 隐藏</div>
   </div>
 
   <div id="stats">

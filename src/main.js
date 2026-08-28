@@ -7,6 +7,7 @@ import { LEVELS, getLevel, countEnemies } from './level/index.js';
 import { DoorManager } from './systems/doors.js';
 import { placeItems } from './level/furniture.js';
 import { renderFloorplanSvg, roomLabelList } from './level/floorplan-svg.js';
+import { renderMinimapSvg, roomAt } from './level/minimap.js';
 import { VoxelMesher } from './voxel/mesher.js';
 import { Player } from './player/player.js';
 import { OrbitFollowCamera } from './player/camera.js';
@@ -82,6 +83,7 @@ const hud = {
   hint: $('hint'), hintCount: $('hint-count'),
   nadeKind: $('nade-kind'), flashWhite: $('flash-white'),
   missions: $('missions'), msGrid: $('ms-grid'), mapFull: $('map-full'),
+  minimap: $('minimap'), mmBox: $('mm-box'), mmHere: $('mm-here'),
 };
 // 调试面板（FPS/POS/SHOTS/HITS…）默认隐藏，反引号切换（见下方 input.justPressed('debug')）。
 // 不在 HTML 里写死 display:none，是因为面板同时也是 boot 信息的容器；
@@ -212,6 +214,37 @@ const grenades = new GrenadeSystem(scene, world, effects, flashPool);
 const audio = new Audio();
 const pickups = new PickupManager(scene, world);
 placeItems(pickups, [...LEVEL.medkits, ...LEVEL.weapons]);
+
+/**
+ * ── 战斗小地图 ────────────────────────────────────────────────────────────
+ *
+ * 只画房间轮廓、门、撤离点和玩家自己。数据源是关卡注册表的 `rooms`，
+ * 不是体素网格 —— 家具和敌人不在那份数据里，所以「不泄露」是结构保证。
+ * 新地图只要在 level/index.js 登记 rooms/building/spawn/doors 就自动有图。
+ */
+hud.mmBox.innerHTML = renderMinimapSvg(LEVEL).svg;
+const mmPlayer = hud.mmBox.querySelector('.mm-player');
+let minimapOn = true;
+let mmHereId = undefined;        // 与 roomAt 的 null（室外）区分，保证第一帧会写「室外」
+// 开局在任务选择屏/简报，小地图先收起，startMission() 里再放出来
+hud.minimap.classList.add('off');
+
+/** 玩家箭头跟位置与朝向走。上为北（−Z），所以 yaw=0 时箭头指向正上。 */
+function updateMinimap() {
+  if (!minimapOn) return;
+  const arrow = hud.mmBox?.querySelector('.mm-player');
+  if (!arrow) return;
+  const deg = (-cam.yaw * 180) / Math.PI;
+  arrow.setAttribute(
+    'transform',
+    `translate(${player.pos.x.toFixed(2)} ${player.pos.z.toFixed(2)}) rotate(${deg.toFixed(1)})`
+  );
+  const id = roomAt(LEVEL, player.pos.x, player.pos.z);
+  if (id !== mmHereId) {
+    mmHereId = id;
+    if (hud.mmHere) hud.mmHere.textContent = id ? (LEVEL.roomLabels?.[id] ?? id) : '室外';
+  }
+}
 
 // ── Game state ─────────────────────────────────────────────────────────────
 const game = {
@@ -564,11 +597,23 @@ function startMission() {
   game.nadeKind = loadoutChoice.nade;
   game.nades = grenadeInventory(game.nadeKind, D().grenades);
   game.started = true;
+  // 跳简报（R 重开）路径也会走到这里 —— 任务选择屏同样要关掉，
+  // 否则游戏已经在跑了，选择屏还盖在上面挡视线挡点击。
   hud.brief.style.display = 'none';
+  if (hud.missions) hud.missions.style.display = 'none';
+  // 小地图属于战斗 HUD：任务进行中才显示（简报阶段它会盖在面板边上很碍眼）
+  if (hud.minimap) hud.minimap.classList.toggle('off', !minimapOn);
+  updateMinimap();
   syncVitalsHud();
   // 简报是用户手势，正好在这里创建 AudioContext（浏览器要求手势触发）
   audio.init();
-  canvas.requestPointerLock?.();
+  // 指针锁定可能因为「缺少用户手势」而拒绝（比如 R 重开后的自动开始），
+  // rejection 会变成未处理的 Promise 错误砸进 #err —— 吞掉，静默等待
+  // 下一次真实点击自然完成锁定。
+  if (canvas.requestPointerLock) {
+    try { canvas.requestPointerLock()?.catch?.(() => {}); }
+    catch { /* 无手势 / 冷却中，等下一次点击 */ }
+  }
 }
 hud.briefGo.addEventListener('click', startMission);
 window.addEventListener('keydown', (e) => {
@@ -665,10 +710,15 @@ function killPlayer() {
 combat.onKill = (enemy) => {
   game.killed++;
   audio.kill();
-  // 100% 掉落所持武器；30% 额外弹药
+  /**
+   * 只掉落所持武器（带备弹）。
+   *
+   * 曾经额外 30% 掉一个独立的青色弹药方块，但它是个 0.4 vox 的纯色立方体，
+   * 落在尸体上就是一坨突兀的蓝块 —— 读作「这里有东西」，实际只是弹药，
+   * 而武器掉落本身已经带了备弹。视觉噪音大于信息量，去掉。
+   */
   pickups.dropWeapon(enemy.pos, enemy.weapon.spec.id,
     enemy.weapon.ammo, Math.floor(enemy.weapon.spec.reserve * 0.25) || 20);
-  if (Math.random() < 0.3) pickups.dropAmmo(enemy.pos, 30);
 
   if (game.killed >= game.totalEnemies) {
     game.extractReady = true;
@@ -806,6 +856,14 @@ function frame(nowMs) {
     renderer.render(scene, cam.cam);
     game.startTime = now;           // 计时从真正开始的那一刻算
     last = nowMs;
+    /**
+     * 简报阶段也必须每帧消费输入。曾经这里提前 return，pressed / clicked /
+     * 鼠标增量在整个简报期间不断累积 —— 开局第一帧把简报里按过的所有键
+     * （翻页用的 Enter、方向键，甚至点卡片的鼠标）一次性全部触发：
+     * 手电自己打开、手雷凭空扔出、镜头猛甩一截。「按一个键像按了全部」
+     * 的观感就来自这里。
+     */
+    input.endFrame();
     requestAnimationFrame(frame);
     return;
   }
@@ -862,6 +920,12 @@ function frame(nowMs) {
     }
     if (input.justPressed('debug')) {
       hud.stats.style.display = hud.stats.style.display === 'none' ? '' : 'none';
+    }
+    // Tab 收起 / 展开小地图。想完全靠记路的人可以关掉它。
+    if (input.justPressed('minimap')) {
+      minimapOn = !minimapOn;
+      hud.minimap.classList.toggle('off', !minimapOn);
+      if (minimapOn) { mmHereId = undefined; updateMinimap(); }
     }
 
     // 武器切换
@@ -943,7 +1007,7 @@ function frame(nowMs) {
     indicators.update(cam.cam.position, now, dt, game.totalEnemies - game.killed <= 3);
 
     // ── 门 ──
-    // E 键开关最近的门。门在体素网格里是实心方块，开关会改动网格，
+    // X 键开关最近的门。门在体素网格里是实心方块，开关会改动网格，
     // 所以下面统一调用 mesher.rebuildDirty() 重建受影响的区块。
     const nearDoor = doors.nearest(
       player.pos.x, player.pos.y + 1, player.pos.z, 2.2
@@ -952,7 +1016,7 @@ function frame(nowMs) {
       /**
        * 关门前检查门洞里有没有人。站在门洞里关门会把实心方块写在自己
        * 身上，碰撞盒被完全包住，玩家彻底卡死在墙里只能重开 —— 而这是
-       * 一个玩家几乎必然会做一次的操作（走到门口顺手按 E）。
+       * 一个玩家几乎必然会做一次的操作（走到门口顺手按 X）。
        */
       const actors = [
         { pos: player.pos, height: player.body.height, radius: PLAYER.width / 2 },
@@ -981,11 +1045,17 @@ function frame(nowMs) {
       if (spec) toast(`拾取 ${spec.name}`);
       nearWeapon = null;
     }
-    hud.prompt.style.display = nearWeapon ? 'block' : 'none';
-    if (nearWeapon) {
-      hud.prompt.innerHTML =
-        `<b>G</b> 拾取 ${WEAPONS[nearWeapon.payload.weapon]?.name ?? '武器'}`;
+
+    // ── 交互提示：门和拾取物各自一行，同时靠近就都显示 ──
+    const hints = [];
+    if (nearDoor) {
+      hints.push(`<b>X</b> ${nearDoor.open ? '关门' : '开门'}`);
     }
+    if (nearWeapon) {
+      hints.push(`<b>G</b> 拾取 ${WEAPONS[nearWeapon.payload.weapon]?.name ?? '武器'}`);
+    }
+    hud.prompt.style.display = hints.length ? 'block' : 'none';
+    if (hints.length) hud.prompt.innerHTML = hints.join('<br>');
 
     // ── 撤离判定 ──
     if (game.extractReady) {
@@ -1085,6 +1155,10 @@ function frame(nowMs) {
   hud.dbgFire.textContent = fireDebug;
   hud.dbgKeys.textContent = String(input.keyEventCount);
 
+  // 小地图每帧更新（只改一个 transform，开销可忽略）。
+  // 不放进 0.35 秒采样块：那样箭头会一跳一跳，转身时尤其明显。
+  try { updateMinimap(); } catch { /* 小地图绝不能把主循环带崩 */ }
+
   fpsAccum += dt; fpsFrames++;
   if (fpsAccum >= 0.35) {
     hud.fps.textContent = String(Math.round(fpsFrames / fpsAccum));
@@ -1124,6 +1198,14 @@ function syncVitalsHud() {
   hud.nadeCount.textContent = String(game.nades);
   hud.nadeBox.classList.toggle('empty', game.nades === 0);
   if (hud.nadeKind) hud.nadeKind.textContent = GRENADES[game.nadeKind]?.label ?? '手雷';
+  /**
+   * 「剩余敌人」也在这里刷。它原来只在帧循环的 0.35 秒采样块里更新，
+   * 而简报阶段那个块不执行 —— 玩家在简报界面看到的是 index.html 里的
+   * 占位符「– / –」，一进游戏才突然跳出真数字。现在启动即为真值，
+   * 且与 game.totalEnemies（= 实际生成的敌人数）同源。
+   */
+  const aliveNow = enemies.filter((e) => !e.dead).length;
+  hud.enemies.textContent = `${aliveNow} / ${game.totalEnemies}`;
 }
 syncVitalsHud();
 
@@ -1131,5 +1213,5 @@ requestAnimationFrame(frame);
 
 window.__game = {
   world, player, cam, flashlight, scene, renderer, mesher,
-  enemies, combat, loadout, pickups, game, effects,
+  enemies, combat, loadout, pickups, game, effects, doors,
 };

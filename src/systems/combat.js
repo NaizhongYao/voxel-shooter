@@ -166,14 +166,24 @@ export class Combat {
     return { hitEnemy };
   }
 
-  /** 敌人开火：带瞄准误差，保证会打空（受控 DPS） */
-  enemyShoot(enemy, player, now) {
+  /**
+   * 敌人开火：带瞄准误差，保证会打空（受控 DPS）
+   *
+   * @param opts.aimAt       瞄准点（世界坐标）。给了就朝这里打而不是玩家
+   *                         当前位置 —— 盲射压制朝「最后看见的位置」开火，
+   *                         玩家已经移开的话自然就打空了，不是穿墙作弊。
+   * @param opts.extraSpread 额外线性瞄准误差（vox）。压制射击用它把弹道
+   *                         打散成「泼子弹」，命中靠运气不靠精度。
+   */
+  enemyShoot(enemy, player, now, opts = null) {
     const spec = enemy.weapon.spec;
     const origin = new THREE.Vector3(enemy.pos.x, enemy.eyeY, enemy.pos.z);
-    const torsoY = player.pos.y + player.body.height * 0.62;
-    _dir.set(
-      player.pos.x - origin.x, torsoY - origin.y, player.pos.z - origin.z
-    );
+    const aim = opts?.aimAt ?? null;
+    const aimX = aim ? aim.x : player.pos.x;
+    const aimZ = aim ? aim.z : player.pos.z;
+    const aimBaseY = aim ? aim.y : player.pos.y;
+    const torsoY = aimBaseY + player.body.height * 0.62;
+    _dir.set(aimX - origin.x, torsoY - origin.y, aimZ - origin.z);
     const dist = _dir.length() || 1;
     _dir.divideScalar(dist);
 
@@ -182,7 +192,8 @@ export class Combat {
     // 结果贴脸时敌人 30/30 全中、玩家必死。改成线性偏移后，
     // 无论远近敌人都会打偏一部分，「多人交火才致命」的设计才成立。
     // 瞄准误差按难度缩放（简单 ×1.6 打得偏 / 专家 ×0.6 打得准）
-    const missOffset = PERCEPTION.aimError * D().aimErrorMul;
+    const missOffset = PERCEPTION.aimError * D().aimErrorMul
+      + (opts?.extraSpread ?? 0);
     const angleDeg = Math.atan2(missOffset, dist) * 180 / Math.PI;
 
     for (let p = 0; p < spec.pellets; p++) {
