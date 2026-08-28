@@ -1,62 +1,180 @@
 import { BLOCK } from '../voxel/blocks.js';
 
 /**
- * 家具布置：把空荡的黑楼变成一栋住过人的房子。
+ * 共享家具库。任何关卡都从这里取件，不要在关卡文件里再抄一份 put/sofa。
  *
- * 三条约束：
- *  1. 门内侧 2 格不放任何东西 —— 玩家需要切角的物理空间（GDD 10 章）。
- *  2. 家具错位摆放 —— 从不同门进来看到的扇区不同，「选哪扇门」才是决策。
- *  3. 永不覆盖已有方块。put() 会先检查目标格是不是空气，所以家具绝不会
- *     长进墙里、也不会盖掉掩体 —— 「家具嵌在墙中间」那类穿模从源头消失。
+ * 三层：
+ *   1. 方块 ID 仍在 blocks.js（渲染 / 碰撞的唯一来源）
+ *   2. 本文件：放置原语 + 命名组合件 + 门口清障白名单
+ *   3. 关卡布局脚本：只调用 kit()，决定「这间房放哪几件」
  *
- * 家具同时承担掩体功能，高度就是掩体等级：
- *  沙发座 0.55 / 桌 0.75 / 台面 0.9 / 沙发靠背·柜·衣柜 1.0
+ * 三条硬约束（所有地图共用）：
+ *   · 永不覆盖已有方块（地毯除外，家具可以压地毯）
+ *   · 门口 2 格净空由关卡清障负责，组合件自己不去保证
+ *   · 新增家具方块必须同时写进 PIECES 和 CLEARABLE，否则门口清障拆不掉
  */
 
-/** 一组辅助函数，让房间布置读起来像在描述家具而不是填数组 */
-function make(w, y) {
-  return {
-    /**
-     * 单块。只写进空气格或地毯上 —— 家具永远不会长进墙里或盖掉掩体。
-     *
-     * 允许覆盖地毯是因为布置顺序是「先铺地毯再摆家具」（读起来才自然），
-     * 而地毯是 0.03 高的非实体装饰片，被家具压住完全合理。
-     * 换成「只写空气」会让沙发、床、电视全部被自己脚下的地毯挡掉。
-     */
+/**
+ * 可摆放的单件。关卡一般 F.place('table', x, z)，散件也可 F.put(x, z, PIECES.table)。
+ * 新增方块：先在 blocks.js 登记，再写进这里 —— CLEARABLE 会自动跟上。
+ */
+export const PIECES = {
+  sofa:      BLOCK.SOFA,
+  sofaBack:  BLOCK.SOFA_BACK,
+  table:     BLOCK.TABLE,
+  tv:        BLOCK.TV,
+  bed:       BLOCK.BED,
+  cabinet:   BLOCK.CABINET,
+  carpet:    BLOCK.CARPET,
+  lamp:      BLOCK.LAMP,
+  plant:     BLOCK.PLANT,
+  counter:   BLOCK.COUNTER,
+  chair:     BLOCK.CHAIR,
+  wardrobe:  BLOCK.WARDROBE,
+  picture:   BLOCK.PICTURE,
+  sink:      BLOCK.SINK,
+  bookshelf: BLOCK.BOOKSHELF,
+  crate:     BLOCK.CRATE,
+  shelf:     BLOCK.SHELF,
+};
+
+/**
+ * 命名组合件（多格家具）。新地图优先调这些，不要在关卡里再拼 2×3 的床。
+ * 值是给关卡作者看的说明；真正的放置函数在 kit() 上同名。
+ */
+export const SETS = {
+  sofa:            '沙发（座位+靠背）',
+  doubleBed:       '双人床（床垫+床头柜+灯）',
+  examBed:         '诊床 / 隔离床',
+  tvStand:         '电视柜（底座+双格屏幕）',
+  tvLounge:        '客厅沙发+茶几+电视',
+  diningTable:     '四人餐桌',
+  kitchenRun:      '厨房台面（冰箱+水槽）',
+  desk:            '书桌（桌+椅+灯）',
+  wetCorner:       '双格洗手台',
+  bookWall:        '沿墙书架',
+  closet:          '衣柜组',
+  operatingTable:  '手术台（桌+椅+灯）',
+  labBench:        '化验台',
+  morgueDrawers:   '停尸冷柜',
+  receptionDesk:   '接待桌',
+  waitingRow:      '面对面候诊沙发',
+};
+
+/**
+ * 拾取物。和家具一样按名字取，坐标由关卡决定。
+ * kind 字符串与 pickups.js 的 KIND 对齐，本文件不引用 three，逻辑测试才能继续纯跑。
+ */
+export const ITEMS = {
+  medkit:     { kind: 'medkit', label: '医疗包' },
+  ammo:       { kind: 'ammo',   label: '弹药', amount: 30 },
+  pistol:     { kind: 'weapon', weapon: 'pistol',     label: 'M19 消音' },
+  pistolFast: { kind: 'weapon', weapon: 'pistolFast', label: 'M19C 快射' },
+  smg:        { kind: 'weapon', weapon: 'smg',        label: 'MP7 冲锋枪' },
+  shotgun:    { kind: 'weapon', weapon: 'shotgun',    label: 'M870 霰弹枪' },
+  ar:         { kind: 'weapon', weapon: 'ar',         label: 'AR-15 突击步枪' },
+  dmr:        { kind: 'weapon', weapon: 'dmr',        label: 'DMR 精准步枪' },
+};
+
+/** 全目录索引：关卡设计时对着这份点名即可 */
+export const CATALOG = {
+  pieces: Object.keys(PIECES),
+  sets:   Object.keys(SETS),
+  items:  Object.keys(ITEMS),
+};
+
+/**
+ * 在格子上生成一件拾取物描述（还没放进场景）。
+ * y 默认 1.4 = 地面层 + 0.4，和现有医疗包/武器悬浮高度一致。
+ */
+export function itemAt(id, x, z, y = 1.4) {
+  const spec = ITEMS[id];
+  if (!spec) {
+    throw new Error(`物品目录里没有「${id}」。可调取: ${CATALOG.items.join(', ')}`);
+  }
+  return { id, ...spec, x, y, z };
+}
+
+/**
+ * 把物品清单交给 PickupManager。关卡和 main 都走这里，不要再手写 kind 分支。
+ * manager.add(kind, pos, payload) 即可，不依赖 three 的具体类。
+ */
+export function placeItems(manager, list) {
+  for (const it of list) {
+    if (it.kind === 'weapon') manager.add('weapon', it, { weapon: it.weapon });
+    else if (it.kind === 'medkit') manager.add('medkit', it, {});
+    else if (it.kind === 'ammo') manager.add('ammo', it, { amount: it.amount ?? 30 });
+    else throw new Error(`未知物品 kind: ${it.kind}`);
+  }
+}
+
+/**
+ * 门口 / 出生点清障白名单。必须显式枚举，不能用 `id >= BLOCK.SOFA`：
+ * 建筑材质（CONCRETE / CEILING / WALL_IN / ROOF）的 ID 也在沙发之后，
+ * 区间判断会把内墙一起拆掉。
+ */
+export const CLEARABLE = new Set(Object.values(PIECES));
+
+const BACK_OFF = {
+  east:  [-1,  0],
+  west:  [ 1,  0],
+  north: [ 0,  1],
+  south: [ 0, -1],
+};
+
+/** F.place 允许点名的全部方法：命名组合件 + 单件 + 原位方法 */
+const PLACEABLE = new Set([
+  ...Object.keys(SETS),
+  'sofa', 'picture', 'shelf', 'crate', 'lamp', 'plant', 'chair', 'tv',
+  'sink', 'table', 'cabinet', 'wardrobe', 'counter', 'bookshelf', 'bed',
+]);
+
+/**
+ * 打开一套家具工具。w 是体素世界，y 是地面层（家具写在这一层）。
+ *
+ *   import { kit } from './furniture.js';
+ *   const F = kit(w, 1);
+ *   F.doubleBed(9, 10, 'east');
+ *   F.tvLounge(10, 41, { sofaLen: 5, facing: 'east' });
+ */
+export function kit(w, y) {
+  const F = {
+    /** 单块。只写空气或地毯，绝不长进墙里、也不盖掉掩体。 */
     put(x, z, id) {
       const cur = w.get(x, y, z);
       if (cur === BLOCK.AIR || cur === BLOCK.CARPET) w.set(x, y, z, id);
     },
-    /** 沿 x 或 z 排一行 */
+
     row(x, z, len, id, axis = 'x') {
       for (let i = 0; i < len; i++) {
         this.put(axis === 'x' ? x + i : x, axis === 'x' ? z : z + i, id);
       }
     },
-    /** 实心矩形 */
+
     rect(x0, z0, x1, z1, id) {
-      for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) this.put(x, z, id);
-    },
-    /** 地毯：贴地薄片，纯装饰 */
-    carpet(x0, z0, x1, z1) {
       for (let z = z0; z <= z1; z++)
-        for (let x = x0; x <= x1; x++) this.put(x, z, BLOCK.CARPET);
+        for (let x = x0; x <= x1; x++) this.put(x, z, id);
     },
+
+    carpet(x0, z0, x1, z1) {
+      this.rect(x0, z0, x1, z1, BLOCK.CARPET);
+    },
+
     /**
-     * 沙发：座位 + 靠背。facing 指沙发朝向（靠背在反侧）。
-     * 「坐着看电视」的朝向关系是对的，玩家才能读懂房间的用途。
+     * 沙发：座位 + 靠背。facing 是人坐着看的方向（靠背在反侧）。
+     * 靠背格如果已经是墙，put 会跳过，不会把墙换成靠背。
      */
     sofa(x, z, len, facing) {
       const horiz = facing === 'north' || facing === 'south';
+      const [bx, bz] = BACK_OFF[facing] ?? BACK_OFF.east;
       for (let i = 0; i < len; i++) {
         const sx = horiz ? x + i : x;
         const sz = horiz ? z : z + i;
         this.put(sx, sz, BLOCK.SOFA);
-        const bx = sx + (facing === 'east' ? -1 : facing === 'west' ? 1 : 0);
-        const bz = sz + (facing === 'south' ? -1 : facing === 'north' ? 1 : 0);
-        this.put(bx, bz, BLOCK.SOFA_BACK);
+        this.put(sx + bx, sz + bz, BLOCK.SOFA_BACK);
       }
     },
+
     /**
      * 挂画：贴在墙面上的薄片，挂在腰上一格（y+1）。
      * 必须紧贴一面实心墙才挂 —— 否则会变成飘在房间中间的画框。
@@ -68,149 +186,465 @@ function make(w, y) {
         w.get(x, y + 1, z - 1) !== BLOCK.AIR || w.get(x, y + 1, z + 1) !== BLOCK.AIR;
       if (touchesWall) w.set(x, y + 1, z, BLOCK.PICTURE);
     },
+
+    /** 2 格高货架。下层写不进则整件跳过，避免悬空上层。 */
+    shelf(x, z) {
+      if (w.get(x, y, z) !== BLOCK.AIR) return;
+      w.set(x, y, z, BLOCK.SHELF);
+      if (w.get(x, y + 1, z) === BLOCK.AIR) w.set(x, y + 1, z, BLOCK.SHELF);
+    },
+
+    crate(x, z) { this.put(x, z, BLOCK.CRATE); },
+    lamp(x, z) { this.put(x, z, BLOCK.LAMP); },
+    plant(x, z) { this.put(x, z, BLOCK.PLANT); },
+    chair(x, z) { this.put(x, z, BLOCK.CHAIR); },
+    tv(x, z) { this.put(x, z, BLOCK.TV); },
+    sink(x, z) { this.put(x, z, BLOCK.SINK); },
+    table(x, z) { this.put(x, z, BLOCK.TABLE); },
+    cabinet(x, z) { this.put(x, z, BLOCK.CABINET); },
+    wardrobe(x, z) { this.put(x, z, BLOCK.WARDROBE); },
+    counter(x, z) { this.put(x, z, BLOCK.COUNTER); },
+    bookshelf(x, z) { this.put(x, z, BLOCK.BOOKSHELF); },
+    bed(x, z) { this.put(x, z, BLOCK.BED); },
+
+    /** 一批箱子：crates([[x,z], ...]) */
+    crates(points) {
+      for (const [x, z] of points) this.put(x, z, BLOCK.CRATE);
+    },
+
+    /** 一批 2 格高货架：shelves([[x,z], ...]) */
+    shelves(points) {
+      for (const [x, z] of points) this.shelf(x, z);
+    },
+
+    /**
+     * 按名字放家具，这是地图设计的统一入口。
+     * F.place('doubleBed', 9, 10);
+     * F.place('diningTable', 46, 42);
+     * F.place('lamp', 26, 46);
+     */
+    place(name, x, z, ...args) {
+      const fn = this[name];
+      if (typeof fn !== 'function' || !PLACEABLE.has(name)) {
+        throw new Error(`家具目录里没有「${name}」。可调取: ${[...PLACEABLE].join(', ')}`);
+      }
+      return fn.call(this, x, z, ...args);
+    },
+
+    // ── 命名组合件。新地图优先调这些，坐标是「这组家具的锚点」。──
+
+    /** 双人床：2×3 床垫 + 床头柜 + 床头灯。床沿 x 向东铺。 */
+    doubleBed(x, z, { lampSide = 'south' } = {}) {
+      this.rect(x, z, x + 1, z + 2, BLOCK.BED);
+      this.put(x + 2, z, BLOCK.CABINET);
+      this.put(x + 2, lampSide === 'south' ? z + 2 : z, BLOCK.LAMP);
+    },
+
+    /** 诊床 / 隔离床：2×3 床 + 一侧柜子。 */
+    examBed(x, z, { lampAt = 'foot' } = {}) {
+      this.rect(x, z, x + 1, z + 2, BLOCK.BED);
+      this.put(x + 2, z, BLOCK.CABINET);
+      if (lampAt === 'foot') this.put(x + 2, z + 2, BLOCK.LAMP);
+    },
+
+    /** 电视柜：两格屏幕 + 一格底座，沿 z 立着。 */
+    tvStand(x, z) {
+      this.put(x, z, BLOCK.CABINET);
+      this.put(x, z + 1, BLOCK.TV);
+      this.put(x, z + 2, BLOCK.TV);
+    },
+
+    /**
+     * 客厅：沙发朝电视。anchor 是沙发座位起点。
+     * facing = 人坐着看的方向。
+     */
+    tvLounge(x, z, { sofaLen = 5, facing = 'east' } = {}) {
+      this.sofa(x, z, sofaLen, facing);
+      const mid = Math.floor(sofaLen / 2);
+      if (facing === 'east') {
+        this.rect(x + 4, z + 1, x + 5, z + 2, BLOCK.TABLE);
+        this.tvStand(x + 10, z);
+      } else if (facing === 'west') {
+        this.rect(x - 5, z + 1, x - 4, z + 2, BLOCK.TABLE);
+        this.tvStand(x - 10, z);
+      } else if (facing === 'south') {
+        this.rect(x + 1, z + 4, x + 2, z + 5, BLOCK.TABLE);
+      } else {
+        this.rect(x + 1, z - 5, x + 2, z - 4, BLOCK.TABLE);
+      }
+      void mid;
+    },
+
+    /** 餐桌：2×2 桌面，四边各一把椅子。 */
+    diningTable(x, z) {
+      this.rect(x, z, x + 1, z + 1, BLOCK.TABLE);
+      this.put(x - 1, z, BLOCK.CHAIR);
+      this.put(x - 1, z + 1, BLOCK.CHAIR);
+      this.put(x + 2, z, BLOCK.CHAIR);
+      this.put(x + 2, z + 1, BLOCK.CHAIR);
+    },
+
+    /** 厨房台面：沿墙一排 COUNTER，一端冰箱，一端水槽。 */
+    kitchenRun(x, z, len, axis = 'z', { fridgeAt = 'start', sinkAt = 'end' } = {}) {
+      this.row(x, z, len, BLOCK.COUNTER, axis);
+      const endX = axis === 'x' ? x + len - 1 : x;
+      const endZ = axis === 'z' ? z + len - 1 : z;
+      if (fridgeAt === 'start') this.put(axis === 'x' ? x : x - 1, axis === 'z' ? z : z, BLOCK.CABINET);
+      if (sinkAt === 'end') this.put(endX, endZ, BLOCK.SINK);
+    },
+
+    /** 书桌：两格桌 + 椅子 + 台灯。椅子在桌的 +z 侧。 */
+    desk(x, z) {
+      this.rect(x, z, x + 1, z, BLOCK.TABLE);
+      this.put(x, z + 1, BLOCK.CHAIR);
+      this.put(x + 2, z, BLOCK.LAMP);
+    },
+
+    /** 双格洗手台 / 马桶组。 */
+    wetCorner(x, z, axis = 'z') {
+      this.row(x, z, 2, BLOCK.SINK, axis);
+    },
+
+    /** 沿墙一排书架或档案柜。 */
+    bookWall(x, z, len, axis = 'z', id = BLOCK.BOOKSHELF) {
+      this.row(x, z, len, id, axis);
+    },
+
+    /** 衣柜组。 */
+    closet(x, z, len = 2, axis = 'x') {
+      this.row(x, z, len, BLOCK.WARDROBE, axis);
+    },
+
+    /**
+     * 手术台。锚点是桌面西北角。
+     * 默认 4×3 桌，椅子在北（z-1），灯在南（z+3）。
+     */
+    operatingTable(x, z, { w = 3, d = 2 } = {}) {
+      this.rect(x, z, x + w, z + d, BLOCK.TABLE);
+      this.put(x, z - 1, BLOCK.CHAIR);
+      this.put(x + w, z - 1, BLOCK.CHAIR);
+      this.put(x, z + d + 1, BLOCK.LAMP);
+      this.put(x + w, z + d + 1, BLOCK.LAMP);
+    },
+
+    /** 化验台：沿墙 COUNTER，一端柜子一端水槽。 */
+    labBench(x, z, len, axis = 'z') {
+      this.row(x, z, len, BLOCK.COUNTER, axis);
+      this.put(axis === 'x' ? x + 1 : x + 1, axis === 'z' ? z : z, BLOCK.CABINET);
+      const endX = axis === 'x' ? x + len - 1 : x;
+      const endZ = axis === 'z' ? z + len - 1 : z;
+      this.put(axis === 'x' ? endX : endX + 1, axis === 'z' ? endZ : endZ, BLOCK.SINK);
+    },
+
+    /** 停尸冷柜：沿墙一排满高柜子。 */
+    morgueDrawers(x, z, len, axis = 'z') {
+      this.row(x, z, len, BLOCK.CABINET, axis);
+    },
+
+    /** 接待桌：2×2 桌 + 内侧椅子 + 台灯。 */
+    receptionDesk(x, z) {
+      this.rect(x, z, x + 2, z + 1, BLOCK.TABLE);
+      this.put(x, z + 2, BLOCK.CHAIR);
+      this.put(x + 3, z, BLOCK.LAMP);
+    },
+
+    /** 面对面两排候诊沙发。xW 西排座位，xE 东排座位。 */
+    waitingRow(xW, xE, z, len) {
+      this.sofa(xW, z, len, 'east');
+      this.sofa(xE, z, len, 'west');
+    },
   };
+
+  return F;
 }
 
 /**
- * 单层布局的家具。房间边界与 level01.js 的 ROOMS 完全一致：
- *
- *   卧室     x= 8..19  z= 8..14
- *   北走道   x=22..43  z= 8..14
- *   书房     x=46..55  z= 8..14
- *   西储     x= 8..19  z=17..24
- *   仓库     x=22..43  z=17..24
- *   东储     x=46..55  z=17..24
- *   主走廊   x= 8..55  z=27..30
- *   南过道   x= 8..55  z=33..35
- *   客厅     x= 8..22  z=38..46
- *   门厅     x=25..39  z=38..46
- *   厨房     x=42..55  z=38..46
- *
- * @param w  World
- * @param y  地面所在层（家具放这一层）
+ * 门口及其两侧各 2 格清掉家具 / 掩体（GDD 规则 1：留出切角空间）。
+ * 绝不动墙体、地板与天花板。门框标记清掉后立刻写回。
+ */
+export function clearDoorways(w, doors, doorH = 2) {
+  for (const d of doors) {
+    const spanX = 2 + (d.through === 'x' ? d.thick : 0);
+    const spanZ = 2 + (d.through === 'z' ? d.thick : 0);
+    for (let y = d.y; y < d.y + doorH; y++) {
+      for (let dx = -2; dx <= spanX; dx++) {
+        for (let dz = -2; dz <= spanZ; dz++) {
+          const id = w.get(d.x + dx, y, d.z + dz);
+          if (CLEARABLE.has(id)) w.set(d.x + dx, y, d.z + dz, BLOCK.AIR);
+        }
+      }
+    }
+  }
+  for (const d of doors) {
+    if (w.get(d.x, d.y, d.z) === BLOCK.AIR) w.set(d.x, d.y, d.z, BLOCK.DOORFRAME);
+  }
+}
+
+/** 出生点周围 2 格净空，避免开局卡在家具里 */
+export function clearSpawn(w, spawn, y0 = 1) {
+  const sx = Math.floor(spawn.x), sz = Math.floor(spawn.z);
+  for (let y = y0; y < y0 + 3; y++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        const id = w.get(sx + dx, y, sz + dz);
+        if (CLEARABLE.has(id)) w.set(sx + dx, y, sz + dz, BLOCK.AIR);
+      }
+    }
+  }
+}
+
+/**
+ * 关卡 01「黑楼」家具布局。房间坐标与 level01.js 的 ROOMS 一致。
+ * 布局本身属于关卡，但件全部来自 kit()。
  */
 export function furnishLevel01(w, y) {
-  const F = make(w, y);
+  const F = kit(w, y);
 
   // ══ 门厅（南侧，正对主入口）══════════════════════════════════════════
-  // 玄关：鞋柜靠两侧竖墙，门内 2 格留空（主入口在 x=31,32）
-  F.put(26, 39, BLOCK.CABINET);
-  F.put(38, 39, BLOCK.CABINET);
+  F.cabinet(26, 39);
+  F.cabinet(38, 39);
   F.picture(26, 38);
   F.picture(38, 38);
   F.carpet(29, 43, 35, 46);
-  F.rect(27, 44, 28, 44, BLOCK.TABLE);       // 侧边小桌，不挡正门
-  F.put(27, 43, BLOCK.CHAIR);
-  F.put(26, 46, BLOCK.LAMP);
-  F.put(38, 45, BLOCK.PLANT);
-  F.put(36, 39, BLOCK.CRATE);
+  F.rect(27, 44, 28, 44, PIECES.table);
+  F.chair(27, 43);
+  F.lamp(26, 46);
+  F.plant(38, 45);
+  F.crate(36, 39);
 
   // ══ 客厅（西南）══════════════════════════════════════════════════════
-  // 沙发朝东看电视，中间地毯 + 茶几 —— 一眼能认出是客厅
   F.carpet(10, 40, 20, 45);
-  F.sofa(10, 41, 5, 'east');                 // 靠背在西侧（贴外墙）
-  F.put(14, 42, BLOCK.TABLE);                // 茶几
-  F.put(14, 43, BLOCK.TABLE);
-  F.put(15, 42, BLOCK.TABLE);
-  F.put(20, 42, BLOCK.TV);                   // 电视对着沙发，发微光
-  F.put(20, 43, BLOCK.TV);
-  F.put(20, 41, BLOCK.CABINET);              // 电视柜
-  F.put(9, 46, BLOCK.LAMP);                  // 落地灯（暖光锚点）
-  F.put(11, 45, BLOCK.CRATE);
-  F.put(17, 46, BLOCK.BOOKSHELF);
-  F.put(18, 46, BLOCK.BOOKSHELF);
+  F.sofa(10, 41, 5, 'east');
+  F.table(14, 42);
+  F.table(14, 43);
+  F.table(15, 42);
+  F.tvStand(20, 41);
+  F.lamp(9, 46);
+  F.crate(11, 45);
+  F.bookWall(17, 46, 2, 'x');
   F.picture(9, 39);
 
   // ══ 厨房 / 餐厅（东南）══════════════════════════════════════════════
-  F.row(55, 40, 5, BLOCK.COUNTER, 'z');      // 沿东外墙的台面
-  F.put(54, 40, BLOCK.CABINET);              // 冰箱
-  F.put(55, 45, BLOCK.SINK);
-  F.rect(46, 42, 47, 43, BLOCK.TABLE);       // 餐桌 + 四把椅子
-  F.put(45, 42, BLOCK.CHAIR);
-  F.put(45, 43, BLOCK.CHAIR);
-  F.put(48, 42, BLOCK.CHAIR);
-  F.put(48, 43, BLOCK.CHAIR);
-  F.put(46, 46, BLOCK.PLANT);
-  F.put(51, 40, BLOCK.LAMP);
+  F.row(55, 40, 5, PIECES.counter, 'z');
+  F.cabinet(54, 40);
+  F.sink(55, 45);
+  F.diningTable(46, 42);
+  F.plant(46, 46);
+  F.lamp(51, 40);
   F.carpet(45, 45, 50, 46);
   F.picture(43, 45);
 
   // ══ 仓库（北侧大空间）════════════════════════════════════════════════
-  // 保留货架掩体格局，补一点「仓库也有人用」的细节
-  F.put(22, 18, BLOCK.CABINET);
-  F.put(22, 19, BLOCK.CABINET);
-  F.put(43, 23, BLOCK.CABINET);
-  F.put(36, 17, BLOCK.COUNTER);              // 工作台
-  F.put(37, 17, BLOCK.COUNTER);
-  F.put(35, 17, BLOCK.LAMP);
-  F.put(28, 24, BLOCK.PLANT);
-  F.put(42, 18, BLOCK.BOOKSHELF);
-  F.put(24, 18, BLOCK.CRATE);
-  F.put(25, 18, BLOCK.CRATE);
-  F.put(24, 19, BLOCK.CRATE);
-  F.put(39, 22, BLOCK.CRATE);
-  F.put(40, 22, BLOCK.TABLE);
+  F.cabinet(22, 18);
+  F.cabinet(22, 19);
+  F.cabinet(43, 23);
+  F.row(36, 17, 2, PIECES.counter, 'x');
+  F.lamp(35, 17);
+  F.plant(28, 24);
+  F.bookshelf(42, 18);
+  F.crate(24, 18);
+  F.crate(25, 18);
+  F.crate(24, 19);
+  F.crate(39, 22);
+  F.table(40, 22);
 
   // ══ 卧室（西北）══════════════════════════════════════════════════════
   F.carpet(9, 9, 17, 14);
-  F.rect(9, 10, 10, 12, BLOCK.BED);          // 双人床
-  F.put(11, 10, BLOCK.CABINET);              // 床头柜
-  F.put(11, 12, BLOCK.LAMP);                 // 床头灯
-  F.put(17, 9, BLOCK.WARDROBE);              // 衣柜
-  F.put(17, 10, BLOCK.WARDROBE);
-  F.put(16, 14, BLOCK.CHAIR);
-  F.put(13, 9, BLOCK.TV);
+  F.doubleBed(9, 10);
+  F.closet(17, 9, 2, 'z');
+  F.chair(16, 14);
+  F.tv(13, 9);
   F.picture(9, 14);
 
   // ══ 书房 / 卫浴（东北）══════════════════════════════════════════════
-  F.put(47, 9, BLOCK.SINK);
-  F.put(47, 10, BLOCK.SINK);                 // 马桶
-  F.put(55, 9, BLOCK.BOOKSHELF);
-  F.put(55, 10, BLOCK.BOOKSHELF);
-  F.put(55, 11, BLOCK.BOOKSHELF);
-  F.rect(52, 13, 53, 13, BLOCK.TABLE);       // 书桌
-  F.put(52, 14, BLOCK.CHAIR);
-  F.put(54, 13, BLOCK.LAMP);
+  F.wetCorner(47, 9, 'z');
+  F.bookWall(55, 9, 3, 'z');
+  F.desk(52, 13);
   F.carpet(50, 12, 54, 14);
   F.picture(48, 14);
 
   // ══ 北走道 ══════════════════════════════════════════════════════════
-  F.put(23, 9, BLOCK.PLANT);
-  F.put(42, 9, BLOCK.PLANT);
-  F.put(24, 13, BLOCK.LAMP);
-  F.put(26, 9, BLOCK.CRATE);
-  F.put(38, 13, BLOCK.TABLE);
+  F.plant(23, 9);
+  F.plant(42, 9);
+  F.lamp(24, 13);
+  F.crate(26, 9);
+  F.table(38, 13);
 
   // ══ 储藏间（仓库两侧）══════════════════════════════════════════════
-  F.put(8, 17, BLOCK.WARDROBE);
-  F.put(9, 17, BLOCK.WARDROBE);
-  F.put(19, 24, BLOCK.CABINET);
-  F.put(8, 24, BLOCK.LAMP);
-  F.put(55, 17, BLOCK.WARDROBE);
-  F.put(54, 17, BLOCK.WARDROBE);
-  F.put(46, 24, BLOCK.CABINET);
-  F.put(55, 24, BLOCK.LAMP);
+  F.closet(8, 17, 2, 'x');
+  F.cabinet(19, 24);
+  F.lamp(8, 24);
+  F.closet(54, 17, 2, 'x');
+  F.cabinet(46, 24);
+  F.lamp(55, 24);
 
-  // ══ 走廊：少量装饰，绝不挡住这条主动线 ══════════════════════════════
-  F.put(9, 27, BLOCK.PLANT);
-  F.put(54, 30, BLOCK.PLANT);
+  // ══ 走廊 / 南侧过道 / 庭院 ══════════════════════════════════════════
+  F.plant(9, 27);
+  F.plant(54, 30);
   F.picture(10, 27);
   F.picture(52, 30);
-  F.put(21, 30, BLOCK.LAMP);
-  F.put(36, 27, BLOCK.LAMP);
+  F.lamp(21, 30);
+  F.lamp(36, 27);
+  F.plant(9, 33);
+  F.plant(54, 35);
+  F.lamp(16, 35);
+  F.lamp(50, 33);
+  F.plant(30, 52);
+  F.plant(34, 52);
+  F.chair(26, 56);
+  F.table(27, 56);
+  F.plant(38, 55);
+  F.crate(29, 55);
+  F.crate(36, 54);
 
-  // ══ 南侧过道 ════════════════════════════════════════════════════════
-  F.put(9, 33, BLOCK.PLANT);
-  F.put(54, 35, BLOCK.PLANT);
-  F.put(16, 35, BLOCK.LAMP);
-  F.put(50, 33, BLOCK.LAMP);
+  // ══ 掩体 ════════════════════════════════════════════════════════════
+  // 仓库：错位货箱，形成可接近的长视线
+  F.crates([
+    [25, 19], [26, 19], [25, 20], [37, 21], [38, 21], [30, 23], [31, 23], [41, 18],
+    [27, 10], [28, 10], [38, 12],                    // 北走道
+    [18, 28], [33, 29], [46, 28],                    // 主走廊
+    [20, 34], [43, 34],                              // 南侧过道
+    [27, 41], [37, 42], [10, 44], [52, 44],          // 门厅 / 客厅 / 厨房
+    [12, 19], [17, 22], [48, 19], [53, 22],          // 储藏间
+    [28, 54], [29, 54], [36, 56], [24, 58], [40, 52],// 庭院教学区
+  ]);
+  // 2 格高货架（齐胸掩体，透光形成条纹阴影）
+  F.shelves([
+    [29, 17], [29, 18], [34, 17], [34, 18],
+    [39, 23], [39, 24], [23, 21], [23, 22],
+    [15, 29], [42, 29],
+  ]);
+}
 
-  // ══ 庭院：门口的生活痕迹 ════════════════════════════════════════════
-  F.put(30, 52, BLOCK.PLANT);
-  F.put(34, 52, BLOCK.PLANT);
-  F.put(26, 56, BLOCK.CHAIR);
-  F.put(27, 56, BLOCK.TABLE);
-  F.put(38, 55, BLOCK.PLANT);
-  F.put(29, 55, BLOCK.CRATE);
-  F.put(36, 54, BLOCK.CRATE);
+/**
+ * 关卡 02「废弃诊所」家具布局。房间坐标与 level02.js 的 ROOMS 一致。
+ */
+export function furnishLevel02(w, y) {
+  const F = kit(w, y);
+
+  // ══ 候诊室 ════════════════════════════════════════════════════════
+  F.carpet(27, 10, 36, 15);
+  F.waitingRow(26, 36, 10, 4);
+  F.rect(28, 11, 29, 12, PIECES.table);
+  F.plant(27, 15);
+  F.plant(36, 15);
+  F.lamp(26, 8);
+  F.picture(28, 8);
+
+  // ══ 值班休息（西北）════════════════════════════════════════════════
+  F.carpet(9, 9, 16, 14);
+  F.doubleBed(9, 10);
+  F.closet(21, 9, 2, 'x');
+  F.wardrobe(21, 10);
+  F.sofa(9, 16, 2, 'south');
+  F.tv(18, 8);
+  F.plant(22, 16);
+  F.picture(8, 12);
+
+  // ══ 诊室 A / B ════════════════════════════════════════════════════
+  F.carpet(41, 9, 46, 14);
+  F.examBed(41, 10);
+  F.wetCorner(47, 9, 'z');
+  F.chair(40, 16);
+  F.table(41, 16);
+  F.picture(40, 9);
+
+  F.carpet(51, 9, 54, 14);
+  F.examBed(51, 10);
+  F.sink(55, 9);
+  F.plant(55, 16);
+  F.chair(50, 8);
+  F.picture(55, 14);
+
+  // ══ 档案 / 接待 ════════════════════════════════════════════════════
+  F.bookWall(8, 19, 5, 'z');
+  F.bookshelf(9, 19);
+  F.cabinet(9, 20);
+  F.receptionDesk(12, 20);
+  F.plant(8, 24);
+  F.cabinet(22, 19);
+  F.picture(16, 19);
+
+  // ══ 隔离病房 ══════════════════════════════════════════════════════
+  F.carpet(9, 28, 16, 32);
+  F.examBed(8, 28);
+  F.rect(8, 31, 9, 32, PIECES.bed);
+  F.wetCorner(22, 27, 'x');
+  F.closet(22, 33, 2, 'x');
+  F.plant(16, 27);
+  F.table(18, 30);
+  F.chair(19, 30);
+  F.picture(8, 33);
+
+  // ══ 化验室 ════════════════════════════════════════════════════════
+  F.row(8, 36, 8, PIECES.counter, 'z');
+  F.cabinet(9, 36);
+  F.wetCorner(9, 46, 'x');
+  F.diningTable(16, 39);
+  F.chair(16, 42);
+  F.lamp(19, 41);
+  F.plant(23, 46);
+  F.bookWall(20, 44, 2, 'x');
+  F.picture(23, 38);
+
+  // ══ 手术室 ════════════════════════════════════════════════════════
+  F.carpet(28, 39, 35, 44);
+  F.operatingTable(29, 40, { w: 3, d: 2 });
+  F.row(26, 36, 4, PIECES.cabinet, 'x');
+  F.wetCorner(26, 46, 'x');
+  F.plant(37, 46);
+  F.picture(37, 38);
+
+  // ══ 停尸房 ════════════════════════════════════════════════════════
+  F.rect(40, 37, 41, 39, PIECES.bed);
+  F.rect(40, 43, 41, 45, PIECES.bed);
+  F.morgueDrawers(47, 36, 9, 'z');
+  F.lamp(43, 46);
+  F.sink(40, 46);
+  F.table(46, 37);
+  F.picture(40, 36);
+
+  // ══ 值夜室 ════════════════════════════════════════════════════════
+  F.carpet(51, 38, 54, 44);
+  F.sofa(54, 38, 3, 'west');
+  F.table(53, 39);
+  F.chair(53, 40);
+  F.tv(50, 36);
+  F.bed(50, 46);
+  F.cabinet(51, 46);
+  F.lamp(54, 36);
+  F.plant(55, 46);
+  F.picture(55, 38);
+
+  // ══ 庭院 ══════════════════════════════════════════════════════════
+  F.plant(28, 21);
+  F.plant(28, 32);
+  F.plant(38, 20);
+  F.plant(38, 32);
+  F.plant(46, 26);
+  F.table(34, 26);
+  F.chair(35, 26);
+  F.chair(33, 26);
+  F.crate(50, 22);
+  F.crate(54, 28);
+
+  // ══ 掩体 ════════════════════════════════════════════════════════════
+  F.crates([
+    [48, 24], [49, 24], [40, 28], [41, 29], [32, 22],
+    [36, 31], [52, 30], [44, 21],                    // 庭院教学区
+    [10, 29], [18, 32], [20, 28],                    // 隔离病房（高潮）
+    [10, 38], [18, 44], [12, 42],                    // 化验
+    [28, 38], [34, 44],                              // 手术
+    [10, 21], [11, 23],                              // 档案西侧
+    [28, 10], [34, 14],                              // 候诊
+    [10, 10], [18, 14],                              // 休息
+    [42, 38], [54, 44],                              // 停尸 / 值夜
+  ]);
+  F.shelves([
+    [9, 20], [9, 21], [9, 22],                       // 档案西墙
+    [9, 37], [9, 38], [9, 39],                       // 化验西墙
+    [20, 37], [20, 38],
+    [27, 36], [36, 36],                              // 手术北墙
+    [41, 36], [46, 36],                              // 停尸
+  ]);
 }

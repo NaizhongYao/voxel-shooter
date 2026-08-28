@@ -1,5 +1,5 @@
 import { World, BLOCK } from '../voxel/world.js';
-import { furnishLevel01 } from './furniture.js';
+import { furnishLevel01, clearDoorways, clearSpawn } from './furniture.js';
 
 /**
  * 关卡 01「黑楼」——64×64 单层平房 + 外接庭院。
@@ -251,111 +251,13 @@ export function buildLevel01() {
   xWall(w, 27, 33, 34, BLOCK.WALL_IN);   // 留 z=35
   xWall(w, 45, 34, 35, BLOCK.WALL_IN);   // 留 z=33
 
-  // ---- 掩体（错位摆放，门口留白 2 格）-----------------------------------
-  const crates = [
-    // 仓库：错位货箱，形成可接近的长视线
-    [25, 19], [26, 19], [25, 20],
-    [37, 21], [38, 21],
-    [30, 23], [31, 23],
-    [41, 18],
-    // 北走道
-    [27, 10], [28, 10], [38, 12],
-    // 主走廊
-    [18, 28], [33, 29], [46, 28],
-    // 南侧过道
-    [20, 34], [43, 34],
-    // 门厅 / 客厅 / 厨房
-    [27, 41], [37, 42], [10, 44], [52, 44],
-    // 储藏间
-    [12, 19], [17, 22], [48, 19], [53, 22],
-  ];
-  for (const [cx, cz] of crates) {
-    if (w.get(cx, Y0, cz) === BLOCK.AIR) w.set(cx, Y0, cz, BLOCK.CRATE);
-  }
-
-  // 2 格高货架（齐胸掩体，透光形成条纹阴影）
-  const shelves = [
-    [29, 17], [29, 18], [34, 17], [34, 18],
-    [39, 23], [39, 24], [23, 21], [23, 22],
-    [15, 29], [42, 29],
-  ];
-  for (const [sx, sz] of shelves) {
-    if (w.get(sx, Y0, sz) !== BLOCK.AIR) continue;
-    w.set(sx, Y0, sz, BLOCK.SHELF);
-    w.set(sx, Y0 + 1, sz, BLOCK.SHELF);
-  }
-
-  // 庭院掩体（教学区：进门前先学会用掩体）
-  for (const [cx, cz] of [[28, 54], [29, 54], [36, 56], [24, 58], [40, 52]]) {
-    w.set(cx, Y0, cz, BLOCK.CRATE);
-  }
-
-  // ---- 家具 --------------------------------------------------------------
+  // ---- 家具与掩体（坐标留在 furnishLevel01，统一走家具库）----------------
   furnishLevel01(w, Y0);
 
   // 家具布置完之后统一清障：门洞、通道口与出生点必须净空。
-  clearDoorways(w);
-  clearSpawn(w);
+  // 白名单在 furniture.js 的 CLEARABLE，新增家具方块时只改那一处。
+  clearDoorways(w, DOORS, DOOR_H);
+  clearSpawn(w, SPAWN, Y0);
 
   return w;
-}
-
-/**
- * 门口 / 出生点清障时「可以拆掉」的方块白名单。
- *
- * ══ 为什么必须是白名单，不能用 ID 区间 ══
- *
- * 原来写的是 `id >= BLOCK.SOFA` —— 想表达「家具的 ID 都在 SOFA 之后」。
- * 但 blocks.js 后来在家具之后又追加了建筑材质（CONCRETE 27 / CEILING 28 /
- * WALL_IN 29 / ROOF 30），它们的 ID 也都 >= SOFA(12)，于是门口清障
- * 把内墙一起拆了：北区两道竖墙在 z=9..13 被清空，卧室 / 走道 / 书房
- * 变成一个巨大的通间，室内最长视线达到 47 vox（整栋楼对角）。
- *
- * ID 区间判断在「枚举还会继续增长」的地方是必错的。白名单不会随
- * 新增方块而失效 —— 新方块默认不可拆，这是安全的默认值。
- */
-const CLEARABLE = new Set([
-  // 掩体
-  BLOCK.CRATE, BLOCK.SHELF,
-  // 家具
-  BLOCK.SOFA, BLOCK.SOFA_BACK, BLOCK.TABLE, BLOCK.TV, BLOCK.BED,
-  BLOCK.CABINET, BLOCK.CARPET, BLOCK.LAMP, BLOCK.PLANT, BLOCK.COUNTER,
-  BLOCK.CHAIR, BLOCK.WARDROBE, BLOCK.PICTURE, BLOCK.SINK, BLOCK.BOOKSHELF,
-]);
-
-/**
- * 门洞及其两侧各 2 格无阻挡（GDD 规则 1：留出切角空间）。
- * 只清家具与掩体，绝不动墙体、地板与天花板。
- */
-function clearDoorways(w) {
-  for (const d of DOORS) {
-    const spanX = 2 + (d.through === 'x' ? d.thick : 0);
-    const spanZ = 2 + (d.through === 'z' ? d.thick : 0);
-    for (let y = d.y; y < d.y + DOOR_H; y++) {
-      for (let dx = -2; dx <= spanX; dx++) {
-        for (let dz = -2; dz <= spanZ; dz++) {
-          const id = w.get(d.x + dx, y, d.z + dz);
-          if (CLEARABLE.has(id)) w.set(d.x + dx, y, d.z + dz, BLOCK.AIR);
-        }
-      }
-    }
-  }
-  // 门框标记本身要保住（clear 可能把它连带清掉）
-  for (const d of DOORS) {
-    if (w.get(d.x, d.y, d.z) === BLOCK.AIR) w.set(d.x, d.y, d.z, BLOCK.DOORFRAME);
-  }
-}
-
-/** 出生点周围 2 格净空，避免开局卡在家具里 */
-function clearSpawn(w) {
-  const sx = Math.floor(SPAWN.x), sz = Math.floor(SPAWN.z);
-  for (let y = Y0; y < Y0 + 3; y++) {
-    for (let dx = -2; dx <= 2; dx++) {
-      for (let dz = -2; dz <= 2; dz++) {
-        const id = w.get(sx + dx, y, sz + dz);
-        // 同样用白名单：`id >= BLOCK.CRATE` 会把庭院矮墙也拆掉
-        if (CLEARABLE.has(id)) w.set(sx + dx, y, sz + dz, BLOCK.AIR);
-      }
-    }
-  }
 }

@@ -133,8 +133,62 @@
   #hint .big{ font-size:1.1rem; letter-spacing:.3em; color:var(--amber); }
   #hint .small{ font-size:.72rem; color:var(--muted); letter-spacing:.12em; }
 
+  /* ══ 任务选择屏（开局第一屏）══════════════════════════════════════ */
+  #missions{ position:absolute; inset:0; display:flex; align-items:center;
+    justify-content:center; pointer-events:auto; overflow:hidden;
+    background:radial-gradient(1100px 640px at 50% -8%, #18202e 0%, rgba(8,10,14,.96) 58%),
+       rgba(8,10,14,.97); }
+  #missions::after{ content:''; position:absolute; inset:0; pointer-events:none;
+    background:linear-gradient(rgba(255,255,255,.035) 0 1px, transparent 1px 4px);
+    background-size:100% 4px; animation:scanline 1.4s linear infinite; }
+  @keyframes scanline{ from{ background-position:0 0 } to{ background-position:0 4px } }
+  #ms-panel{ width:min(1080px,94vw); padding:26px 30px 22px; border:1px solid var(--rule);
+    background:linear-gradient(180deg,#121820,#0c1016);
+    box-shadow:0 24px 80px rgba(0,0,0,.5); }
+  #ms-panel h2{ font-size:1.05rem; letter-spacing:.3em; color:var(--amber); font-weight:700; }
+  #ms-panel .sub{ font-size:.64rem; letter-spacing:.22em; color:var(--muted); margin-top:4px; }
+  #ms-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:20px; }
+  .ms-card{ --i:0; position:relative; border:1px solid var(--rule); background:#0d1118;
+    overflow:hidden; cursor:pointer; opacity:0;
+    animation:cardIn .5s cubic-bezier(.2,.75,.25,1) both;
+    animation-delay:calc(var(--i)*90ms);
+    transition:transform .2s, box-shadow .2s, border-color .2s; }
+  .ms-card.sel{ border-color:rgba(245,166,35,.8);
+    box-shadow:0 0 0 1px rgba(245,166,35,.35), 0 10px 34px rgba(0,0,0,.5); }
+  .ms-card:not(.locked):not(.future):hover{ transform:translateY(-5px);
+    border-color:var(--amber);
+    box-shadow:0 18px 46px rgba(0,0,0,.6), 0 0 0 1px rgba(245,166,35,.3); }
+  @keyframes cardIn{ from{ opacity:0; transform:translateY(20px) scale(.97) }
+    to{ opacity:1; transform:none } }
+  .ms-thumb{ position:relative; background:#0a0e14; border-bottom:1px solid var(--rule);
+    overflow:hidden; }
+  .ms-thumb svg{ display:block; width:100%; height:auto; transition:transform .3s ease; }
+  .ms-card:not(.locked):not(.future):hover .ms-thumb svg{ transform:scale(1.05); }
+  .ms-thumb.empty{ height:118px; display:flex; align-items:center; justify-content:center;
+    background:repeating-linear-gradient(45deg,#0a0e14 0 14px,#0d1219 14px 28px); }
+  .ms-q{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    font-size:3.4rem; color:rgba(245,166,35,.18); font-weight:700; pointer-events:none; }
+  .ms-card.locked{ filter:grayscale(.55) brightness(.8); }
+  .ms-card.locked:hover{ transform:none; border-color:var(--rule); box-shadow:none; }
+  .ms-card.locked .ms-thumb svg{ filter:sepia(.45) brightness(.75) saturate(.7); }
+  .ms-card.future{ cursor:default; }
+  .ms-card.shake{ animation:msShake .4s; }
+  @keyframes msShake{ 10%,90%{transform:translateX(-2px)}
+    20%,80%{transform:translateX(3px)} 30%,70%{transform:translateX(-4px)}
+    40%,60%{transform:translateX(4px)} 50%{transform:translateX(-3px)} }
+  .ms-body{ padding:12px 14px 14px; }
+  .ms-name{ font-size:.9rem; color:var(--ink); letter-spacing:.1em; font-weight:700; }
+  .ms-name em{ display:block; font-style:normal; font-size:.56rem; color:var(--muted);
+    letter-spacing:.22em; margin-top:3px; }
+  .ms-meta{ font-size:.66rem; color:var(--muted); margin-top:8px; line-height:1.6; }
+  .ms-action{ margin-top:10px; font-size:.68rem; letter-spacing:.24em; color:var(--amber); }
+  .ms-action.off{ color:var(--muted); letter-spacing:.1em; }
+  .ms-keys{ margin-top:18px; text-align:center; font-size:.62rem; color:var(--muted);
+    letter-spacing:.18em; }
+  .ms-keys b{ color:var(--ink); }
+
   /* ══ 任务简报（开局界面）══════════════════════════════════════════ */
-  #brief{ position:absolute; inset:0; display:flex; align-items:center;
+  #brief{ position:absolute; inset:0; display:none; align-items:center;
     justify-content:center; background:rgba(8,10,14,.94); overflow-y:auto;
     pointer-events:auto; }
   #brief-inner{ width:min(820px,94vw); padding:22px 26px 18px;
@@ -157,19 +211,39 @@
   .dots i{ width:7px; height:7px; background:var(--rule); display:block; }
   .dots i.on{ background:var(--amber); }
   .goal3{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:14px; }
-  .goal3 .g{ border:1px solid var(--rule); padding:12px 10px; text-align:center; }
-  .goal3 .n{ font-size:1.4rem; color:var(--amber); font-weight:700; }
+  .goal3 .g{ border:1px solid var(--rule); padding:14px 10px 12px; text-align:center;
+    transition:border-color .2s, background .2s; }
+  .goal3 .g:hover{ border-color:rgba(245,166,35,.5); background:rgba(245,166,35,.05); }
+  .goal3 .ico{ height:30px; display:flex; align-items:center; justify-content:center; }
+  .goal3 .ico svg{ width:26px; height:26px; }
+  .goal3 .n{ font-size:1.4rem; color:var(--amber); font-weight:700; margin-top:6px; }
   .goal3 .l{ font-size:.62rem; color:var(--muted); letter-spacing:.12em; margin-top:4px; }
-  #mini-map{ width:100%; height:340px; background:#0a0e14; border:1px solid #2c3644; }
+  .bpage.on{ animation:pageIn .3s ease both; }
+  @keyframes pageIn{ from{ opacity:0; transform:translateX(16px) }
+    to{ opacity:1; transform:none } }
+  #map-full{ width:100%; background:#0a0e14; border:1px solid #2c3644; overflow:hidden; }
+  #map-full svg{ display:block; width:100%; height:auto; }
   .map-wrap{ position:relative; }
   .map-legend{ display:flex; gap:14px; flex-wrap:wrap; margin-top:8px; font-size:.62rem; color:var(--muted); letter-spacing:.08em; }
   .map-legend b{ width:10px; height:10px; display:inline-block; margin-right:5px; vertical-align:middle; }
   .map-cap{ font-size:.68rem; color:var(--muted); margin-top:8px; line-height:1.7; }
   .loadout-grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-  .lcard{ border:1px solid var(--rule); padding:14px 12px; cursor:pointer; background:rgba(0,0,0,.28); }
+  .lcard{ border:1px solid var(--rule); padding:14px 12px; cursor:pointer; background:rgba(0,0,0,.28);
+    transition:border-color .15s, background .15s, transform .15s; }
+  .lcard:hover{ transform:translateY(-2px); border-color:rgba(245,166,35,.45); }
   .lcard.on{ border-color:var(--amber); background:rgba(245,166,35,.12); box-shadow:inset 0 0 0 1px rgba(245,166,35,.25); }
+  .lcard .gun{ height:38px; margin-bottom:8px; display:flex; align-items:center; }
+  .lcard .gun svg{ width:100%; height:100%; overflow:visible; filter:drop-shadow(0 2px 3px rgba(0,0,0,.6)); }
   .lcard .t{ font-size:.82rem; color:var(--amber); letter-spacing:.12em; }
   .lcard .d{ font-size:.66rem; color:var(--muted); margin-top:6px; line-height:1.6; }
+  .lcard .bars{ display:flex; gap:10px; margin-top:9px; }
+  .lcard .bar{ width:44px; height:5px; background:rgba(0,0,0,.55); border:1px solid var(--rule);
+    position:relative; }
+  .lcard .bar i{ position:absolute; left:1px; top:1px; bottom:1px; background:var(--amber);
+    transition:width .3s; }
+  .lcard:not(.on) .bar i{ background:#6a7280; }
+  .lcard .bar b{ position:absolute; left:0; top:-1px; transform:translateY(-100%);
+    font-size:.52rem; color:var(--muted); letter-spacing:.1em; font-weight:400; }
   .keys4{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:12px; }
   .keys4 span{ border:1px solid var(--rule); padding:8px 6px; text-align:center;
     font-size:.62rem; color:var(--muted); }
@@ -297,8 +371,8 @@
     <span><b>1/2</b> 换枪</span>
     <span><b>Ctrl</b> 慢走</span>
     <span><b>Shift</b> 蹲</span>
-    <span><b>E</b> 开门</span>
-    <span><b>Q/Z</b> 倾斜</span>
+    <span><b>X</b> 开门</span>
+    <span><b>Q/E</b> 倾斜</span>
     <span><b>F</b> 手电</span>
     <span><b>C</b> 视角</span>
     <span><b>3</b> 手雷</span>
@@ -321,21 +395,52 @@
     <div id="expose-bar"><div id="expose-fill"></div></div>
   </div>
 
+  <div id="missions">
+    <div id="ms-panel">
+      <h2>作战档案 · 肃清协议</h2>
+      <div class="sub">SELECT OPERATION — 选择任务档案</div>
+      <div id="ms-grid"></div>
+      <div class="ms-keys"><b>← →</b> 选择档案 · <b>Enter</b> 进入简报</div>
+    </div>
+  </div>
+
   <div id="brief">
     <div id="brief-inner">
       <h2>任务简报 · 肃清协议</h2>
-      <div class="sub">OPERATION BLACKHOUSE — 进去，清掉，出来</div>
+      <div class="sub" id="brief-sub">OPERATION BLACKHOUSE — 进去，清掉，出来</div>
       <div class="dots" id="brief-dots"><i class="on"></i><i></i><i></i><i></i></div>
       <hr>
 
       <div class="bpage on" data-page="0">
         <div class="bsec"><div class="h">01 任务</div></div>
         <div class="goal3">
-          <div class="g"><div class="n" id="brief-count">12</div><div class="l">清除目标</div></div>
-          <div class="g"><div class="n">庭院</div><div class="l">完成后撤离</div></div>
-          <div class="g"><div class="n">无存档</div><div class="l">阵亡即失败</div></div>
+          <div class="g">
+            <div class="ico"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 2.6A7.4 7.4 0 0 0 4.6 10c0 2.6 1.4 4.9 3.5 6.1l.8 3.2h6.2l.8-3.2a7.3 7.3 0 0 0 3.5-6.1A7.4 7.4 0 0 0 12 2.6Z" stroke="#e5484d" stroke-width="1.5"/>
+              <circle cx="8.9" cy="10.1" r="1.9" fill="#e5484d"/>
+              <circle cx="15.1" cy="10.1" r="1.9" fill="#e5484d"/>
+              <path d="M9.9 14.3h4.2" stroke="#e5484d" stroke-width="1.5"/>
+              <path d="M10.5 19.5h3v2h-3z" fill="#e5484d"/>
+            </svg></div>
+            <div class="l">清除目标</div>
+          </div>
+          <div class="g">
+            <div class="ico"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M3.5 4.5v15" stroke="#3fb96f" stroke-width="1.7" stroke-linecap="round"/>
+              <path d="M3.5 12h10.5" stroke="#3fb96f" stroke-width="1.7" stroke-linecap="round"/>
+              <path d="M11 8.5l4 3.5-4 3.5" stroke="#3fb96f" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg></div>
+            <div class="n">庭院</div><div class="l">完成后撤离</div>
+          </div>
+          <div class="g">
+            <div class="ico"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="8.2" stroke="#8b93a3" stroke-width="1.5"/>
+              <path d="M6.4 6.4l11.2 11.2" stroke="#8b93a3" stroke-width="1.5"/>
+            </svg></div>
+            <div class="n">无存档</div><div class="l">阵亡即失败</div>
+          </div>
         </div>
-        <p class="map-cap">进去，清掉全部敌人，从南侧庭院出来。没有检查点。</p>
+        <p class="map-cap" id="goal-cap"></p>
       </div>
 
       <div class="bpage" data-page="1">
@@ -344,7 +449,7 @@
         <div class="keys4">
           <span><b>F</b>手电</span>
           <span><b>Ctrl</b>慢走</span>
-          <span><b>Q/Z</b>探头</span>
+          <span><b>Q/E</b>探头</span>
           <span><b>3</b>手雷</span>
         </div>
       </div>
@@ -352,15 +457,15 @@
       <div class="bpage" data-page="2">
         <div class="bsec"><div class="h">03 地图</div></div>
         <div class="map-wrap">
-          <svg id="mini-map" viewBox="0 0 64 70" aria-label="作战地图"></svg>
+          <div id="map-full"></div>
         </div>
         <div class="map-legend">
-          <span><b style="background:#3fb96f"></b>你 / 南门</span>
-          <span><b style="background:#4cc9f0"></b>后门 / 侧门</span>
-          <span><b style="background:#1a222c"></b>墙体</span>
-          <span><b style="background:#2d3a4a"></b>房间</span>
+          <span><b style="background:#f5a623"></b>出生 / 撤离</span>
+          <span><b style="background:#2fbf5f"></b>门</span>
+          <span><b style="background:#3a4452"></b>墙体</span>
+          <span><b style="background:#1c2419"></b>草地（见天）</span>
         </div>
-        <p class="map-cap" id="map-cap">南门正对你。北墙是后门，东西各有侧门。悬停房间看名字。</p>
+        <p class="map-cap" id="map-cap"></p>
       </div>
 
       <div class="bpage" data-page="3">
@@ -368,18 +473,24 @@
         <p class="map-cap" style="margin-bottom:10px">手枪是保底武器。手雷数量随难度变化。</p>
         <div class="loadout-grid">
           <div class="lcard on" data-pistol="pistol">
+            <div class="gun" data-gun="pistol"></div>
             <div class="t">M19 消音</div>
             <div class="d">射速慢 · 噪音低 · 适合潜行点射</div>
+            <div class="bars" data-bars="pistol"></div>
           </div>
           <div class="lcard" data-pistol="pistolFast">
+            <div class="gun" data-gun="pistolFast"></div>
             <div class="t">M19C 快射</div>
             <div class="d">射速快 · 更响 · 近距离连点</div>
+            <div class="bars" data-bars="pistolFast"></div>
           </div>
           <div class="lcard on" data-nade="flash">
+            <div class="gun" data-nade="flash"></div>
             <div class="t">闪光弹 ×2</div>
             <div class="d">数量多 · 致盲 · 不伤人 · 可照亮黑屋</div>
           </div>
           <div class="lcard" data-nade="he">
+            <div class="gun" data-nade="he"></div>
             <div class="t">高爆 ×½</div>
             <div class="d">数量少 · 杀伤强 · 会惊动整层</div>
           </div>

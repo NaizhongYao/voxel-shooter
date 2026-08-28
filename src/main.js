@@ -3,9 +3,10 @@ import { RENDER, LIGHT, PLAYER, WORLD, PALETTE, GRENADE, GRENADES, grenadeInvent
 import {
   DIFFICULTIES, DIFFICULTY_ORDER, resolveDifficulty, setDifficulty, D,
 } from './difficulty.js';
-import { buildLevel01, SPAWN, DOORS, MAIN_ENTRANCE, ROOMS, BUILDING } from './level/level01.js';
+import { LEVELS, getLevel, countEnemies } from './level/index.js';
 import { DoorManager } from './systems/doors.js';
-import { ENEMY_SPAWNS, ENEMY_COUNT_BY_TIER, MEDKIT_SPAWNS, WEAPON_SPAWNS } from './level/spawns.js';
+import { placeItems } from './level/furniture.js';
+import { renderFloorplanSvg, roomLabelList } from './level/floorplan-svg.js';
 import { VoxelMesher } from './voxel/mesher.js';
 import { Player } from './player/player.js';
 import { OrbitFollowCamera } from './player/camera.js';
@@ -15,7 +16,7 @@ import { Loadout, WEAPONS } from './systems/weapons.js';
 import { Effects } from './systems/effects.js';
 import { Enemy, setPlayerPosCache, STATE } from './systems/enemy.js';
 import { Combat } from './systems/combat.js';
-import { PickupManager, KIND } from './systems/pickups.js';
+import { PickupManager } from './systems/pickups.js';
 import { GrenadeSystem } from './systems/grenades.js';
 import { Audio } from './systems/audio.js';
 import { EnemyIndicators } from './systems/indicators.js';
@@ -32,6 +33,27 @@ const $ = (id) => document.getElementById(id);
  * 重载一次不到一秒，换来的是「难度在一局内绝对不变」这个强保证。
  */
 setDifficulty(resolveDifficulty(location.search).id);
+
+/**
+ * 关卡从注册表取：?map=clinic 等。未知或锁定的关卡回落到第一关。
+ * 关卡的一切（几何、门、房间、出生点、敌人池、拾取物）都从 LEVEL 取，
+ * 不要单独 import 关卡文件的常量 —— 注册表是唯一入口。
+ */
+const LEVEL = (() => {
+  const id = new URLSearchParams(location.search).get('map');
+  const lv = getLevel(id);
+  return lv.locked ? LEVELS[0] : lv;
+})();
+
+/** 当前关卡的玩家出生点。撤离判定与简报机位都用它（原 SPAWN 的注册表版）。 */
+const SPAWN = LEVEL.spawn;
+
+/**
+ * 简报里预告过、但还没选中的难度。选卡只改 URL 和 UI（不重载），
+ * 点「开始任务」时如果和当前实际难度不一样才重载进游戏——
+ * 这样难度卡点击是即时的，游戏内数值又永远是自洽的一组。
+ */
+let pendingDiff = D().id;
 const hud = {
   fps: $('fps'), pos: $('pos'), stance: $('stance'), light: $('light'),
   view: $('view'),
@@ -50,8 +72,9 @@ const hud = {
   brief: $('brief'), briefGo: $('brief-go'), briefPrev: $('brief-prev'),
   briefNext: $('brief-next'), briefDots: $('brief-dots'), diffs: $('diffs'),
   expose: $('expose'), exposeFill: $('expose-fill'),
-  hint: $('hint'), hintCount: $('hint-count'), briefCount: $('brief-count'),
-  nadeKind: $('nade-kind'), flashWhite: $('flash-white'), miniMap: $('mini-map'),
+  hint: $('hint'), hintCount: $('hint-count'),
+  nadeKind: $('nade-kind'), flashWhite: $('flash-white'),
+  missions: $('missions'), msGrid: $('ms-grid'), mapFull: $('map-full'),
 };
 
 // ── Renderer ───────────────────────────────────────────────────────────────
@@ -75,7 +98,7 @@ shapeLight.position.set(-0.4, 1, 0.25);
 scene.add(shapeLight);
 
 // ── World ──────────────────────────────────────────────────────────────────
-const world = buildLevel01();
+const world = LEVEL.build();
 const mesher = new VoxelMesher(world);
 const meshStats = mesher.buildAll();
 scene.add(mesher.group);
@@ -90,10 +113,10 @@ scene.add(mesher.group);
  */
 function devSpawn() {
   const q = new URLSearchParams(location.search).get('spawn');
-  if (!q) return SPAWN;
+  if (!q) return LEVEL.spawn;
   const n = q.split(',').map(Number);
-  if (n.length < 2 || n.some((v) => !Number.isFinite(v))) return SPAWN;
-  return { x: n[0], y: n.length > 2 ? n[2] : SPAWN.y, z: n[1] };
+  if (n.length < 2 || n.some((v) => !Number.isFinite(v))) return LEVEL.spawn;
+  return { x: n[0], y: n.length > 2 ? n[2] : LEVEL.spawn.y, z: n[1] };
 }
 
 const player = new Player(world, devSpawn());
@@ -135,14 +158,30 @@ const loadoutChoice = readLoadoutChoice();
 const loadout = new Loadout({ pistolId: loadoutChoice.pistol });
 
 // 敌人数量按难度分层：简单 tier<=1，困难 tier<=2，专家全部。
-// 人数以 ENEMY_COUNT_BY_TIER 为准。
-const activeSpawns = ENEMY_SPAWNS.filter((s) => s.tier <= D().enemyTier);
+// 简报里的「X 人」和这里用的是同一个 countEnemies —— 数字永远一致。
+const activeSpawns = LEVEL.spawns.filter((s) => s.tier <= D().enemyTier);
 const enemies = activeSpawns.map((s) => {
   const e = new Enemy(world, s);
+  // 出生点脱困兜底：Enemy 构造函数只螺旋搜 3 vox，个别布置点可能救不出来。
+  // 敌人卡在方块里 = 打不中、看不见、还占着胜利计数 —— 一出现就无法通关，
+  // 所以这里扩大半径再救一次，绝不静默留下一个「不存在的敌人」。
+  if (e.blockedAt(e.pos.x, e.pos.z) && !e.escapeIfStuck(12)) {
+    console.error('[spawn] 敌人仍卡在几何里，请修正 spawns 数据:', s);
+  }
   scene.add(e.rig.root);
   return e;
 });
 player.blockers = enemies;
+
+// 自检：简报/难度卡承诺的人数必须等于实际生成的人数。
+// 两处用的是同一个 countEnemies 过滤，理论上永远相等 —— 这个断言是
+// 防止将来有人改了一处忘了另一处时，问题在开发阶段立刻暴露而不是留到玩家手里。
+{
+  const claimed = countEnemies(LEVEL.spawns, D().enemyTier);
+  if (enemies.length !== claimed) {
+    console.error(`[spawn] 承诺 ${claimed} 人，实际生成 ${enemies.length} 人 —— 必须一致！`);
+  }
+}
 
 // 敌人手电：光源池按距离分配给最近的几个敌人（12 个真光源会拖死帧率）
 const enemyLights = new EnemyFlashlights(scene);
@@ -150,10 +189,10 @@ const enemyLights = new EnemyFlashlights(scene);
 const indicators = new EnemyIndicators(scene, enemies);
 
 // 门：关闭时像墙一样挡光挡视线挡子弹（写进体素网格）
-const doors = new DoorManager(scene, world, DOORS);
+const doors = new DoorManager(scene, world, LEVEL.doors);
 // 主入口默认敞开：玩家出生在庭院正对这两扇门，开局撞在关着的门上体验很差，
 // 敞开的门同时也是「往这里走」的视觉引导。
-doors.openAt(MAIN_ENTRANCE);
+doors.openAt(LEVEL.mainEntrance);
 // 门改写了网格，需要重建一次几何
 mesher.rebuildDirty();
 
@@ -161,8 +200,7 @@ const combat = new Combat(world, effects, flashPool, enemies);
 const grenades = new GrenadeSystem(scene, world, effects, flashPool);
 const audio = new Audio();
 const pickups = new PickupManager(scene, world);
-for (const m of MEDKIT_SPAWNS) pickups.add(KIND.MEDKIT, m, {});
-for (const w of WEAPON_SPAWNS) pickups.add(KIND.WEAPON, w, { weapon: w.weapon });
+placeItems(pickups, [...LEVEL.medkits, ...LEVEL.weapons]);
 
 // ── Game state ─────────────────────────────────────────────────────────────
 const game = {
@@ -186,88 +224,162 @@ const game = {
    * 甚至可能有巡逻者走到门口把玩家堵住。
    */
   started: false,
+  /** 收尾阶段提示：剩最后 3 个敌人时亮出他们的位置（只提示一次） */
+  revealed: false,
 };
+
+// ── 任务选择屏 ──────────────────────────────────────────────────────
+/**
+ * 卡片形式的选择屏：已解锁关卡有真平面图缩略图，锁定关卡显示灰卡
+ * 和「情报不足 · 开发中」——未来地图的预告，而不是没有。
+ * 第三格永远保留一个「未解密」占位，给以后的关卡留位置。
+ */
+let msIndex = 0;
+const msCards = [];
+
+function buildMissionCards() {
+  const grid = hud.msGrid;
+  if (!grid) return;
+  grid.innerHTML = '';
+  msCards.length = 0;
+  const entries = [...LEVELS, { future: true, code: '03', name: '未解密', en: 'PROTOCOL ??' }];
+  entries.forEach((lv, i) => {
+    const el = document.createElement('div');
+    el.className = 'ms-card' + (lv.locked ? ' locked' : '') + (lv.future ? ' future' : '');
+    el.dataset.level = lv.id ?? '';
+    el.dataset.index = i;
+    const n = !lv.future && !lv.locked
+      ? countEnemies(lv.spawns, DIFFICULTIES[DIFFICULTY_ORDER[0]].enemyTier)
+      : 0;
+    if (lv.future) {
+      el.innerHTML = `
+        <div class="ms-thumb empty"><span class="ms-q">?</span></div>
+        <div class="ms-body">
+          <div class="ms-name">${lv.code} ${lv.name}<em>${lv.en}</em></div>
+          <div class="ms-meta">档案受损 · 战场形态未知</div>
+          <div class="ms-action off">▓ 等待解密</div>
+        </div>`;
+    } else {
+      let thumb = '';
+      if (!lv.locked) {
+        const { svg } = renderFloorplanSvg(lv.build(), {
+          theme: 'dark', spawn: lv.spawn, doors: lv.doors,
+          roomLabels: roomLabelList(lv.rooms, lv.roomLabels),
+        });
+        thumb = svg;
+      } else {
+        // 灰卡：真轮廓 + 灰化滤镜，人看一眼就知道「那栋楼存在」
+        const { svg } = renderFloorplanSvg(lv.build(), {
+          theme: 'dark', spawn: null, doors: lv.doors,
+          roomLabels: roomLabelList(lv.rooms, lv.roomLabels),
+        });
+        thumb = svg;
+      }
+      el.innerHTML = `
+        <div class="ms-thumb">${thumb}<span class="ms-q">${lv.locked ? '?' : ''}</span></div>
+        <div class="ms-body">
+          <div class="ms-name">${lv.code} ${lv.name}<em>${lv.en}</em></div>
+          <div class="ms-meta">${lv.locked ? '情报不足 · 开发中' : `${n} 敌人 · ${lv.subtitle}`}</div>
+          <div class="ms-action${lv.locked ? ' off' : ''}">${lv.locked ? '▓ 开发中' : '▶ 进入任务'}</div>
+        </div>`;
+    }
+    if (!lv.future && !lv.locked) {
+      el.addEventListener('click', () => openBrief());
+    } else if (lv.locked) {
+      el.addEventListener('click', () => {
+        el.classList.add('shake');
+        setTimeout(() => el.classList.remove('shake'), 420);
+      });
+    }
+    grid.appendChild(el);
+    msCards.push(el);
+  });
+  paintMsSelection();
+}
+
+function paintMsSelection() {
+  msCards.forEach((el, i) => el.classList.toggle('sel', i === msIndex));
+}
+
+function moveMsSelection(dm) {
+  const n = msCards.length;
+  msIndex = (msIndex + dm + n) % n;
+  paintMsSelection();
+}
+
+function openBrief() {
+  hud.missions.style.display = 'none';
+  hud.brief.style.display = 'flex';
+  showBriefPage(0);
+}
 
 // ── 任务简报 + 难度选择 ────────────────────────────────────────────────
 /**
- * 难度卡片。点击即切换（重载页面），因为难度参数必须在创建玩家/敌人
- * 之前确定，运行时热切换会留下新旧混合的状态。
+ * 简报里唯一保留的敌人数：难度页的「敌人 X 人」与点击进入提示。
+ * 任务目标卡不再显示数量 —— 难度是下一页才选的，第一页报数会前后矛盾。
+ */
+function refreshBriefCounts() {
+  const diff = DIFFICULTIES[pendingDiff] ?? D();
+  const n = countEnemies(LEVEL.spawns, diff.enemyTier);
+  if (hud.hintCount) hud.hintCount.textContent = n;
+}
+
+/**
+ * 难度卡片。点击就地切换（只改 URL 与视觉，不重载）……
+ * 真正的游戏参数在「开始任务」时才以当前难度重载成型，
+ * 所以 UI 上是即时的，游戏内数值永远是自洽的一组。
  */
 function buildDifficultyCards() {
   hud.diffs.innerHTML = '';
   for (const id of DIFFICULTY_ORDER) {
     const d = DIFFICULTIES[id];
     const el = document.createElement('div');
-    el.className = 'diff' + (d.id === D().id ? ' on' : '');
+    el.className = 'diff' + (d.id === pendingDiff ? ' on' : '');
     const hex = `#${d.color.toString(16).padStart(6, '0')}`;
+    const hpPct = Math.round((d.hpMax / 120) * 100);
+    const enemies = countEnemies(LEVEL.spawns, d.enemyTier);
     el.innerHTML =
       `<div class="dn" style="color:${hex}">${d.name}</div>` +
       `<div class="ds">${d.subtitle}</div>` +
       `<div class="dd">${d.desc}</div>` +
-      `<div class="dstat">生命 ${d.hpMax} · 护甲 ${d.armorMax} · ` +
-      `手雷 ${d.grenades}<br>敌人 ${ENEMY_COUNT_BY_TIER[d.enemyTier]} 人 · ${d.enemyHp} HP · ` +
-      `视野 ×${d.visionRangeMul} · 指示器 ${d.indicatorRange} vox</div>`;
+      `<div class="hpbar"><i style="width:${hpPct}%;background:${hex}"></i></div>` +
+      `<div class="dstat">生命 ${d.hpMax} · 护甲 ${d.armorMax} · 手雷 ${d.grenades}` +
+      `<br>敌人 ${enemies} 人 · ${d.enemyHp} HP · 视野 ×${d.visionRangeMul}` +
+      ` · 指示器 ${d.indicatorRange} vox</div>`;
     el.addEventListener('click', () => {
-      if (d.id === D().id) return;
-      // 保留 spawn 等其它调试参数，只替换 diff
+      if (id === pendingDiff) return;
+      pendingDiff = id;
+      // 就地更新 URL（不重载），保留 spawn 等调试参数
       const q = new URLSearchParams(location.search);
-      q.set('diff', d.id);
-      location.search = q.toString();
+      q.set('diff', id);
+      history.replaceState(null, '', location.pathname + '?' + q.toString());
+      buildDifficultyCards();
+      refreshBriefCounts();
     });
     hud.diffs.appendChild(el);
   }
-  // 简报/点击进入提示里的敌人数量跟着当前难度走——「12」不再是硬编码的
-  // 事实，是 D().enemyTier 对应的那个数字。
-  const n = ENEMY_COUNT_BY_TIER[D().enemyTier];
-  if (hud.hintCount) hud.hintCount.textContent = n;
-  if (hud.briefCount) hud.briefCount.textContent = n;
 }
 buildDifficultyCards();
+refreshBriefCounts();
 
-function drawMiniMap() {
-  const svg = hud.miniMap;
-  if (!svg) return;
-  const names = {
-    bedroom: '卧室', northHall: '北走道', study: '书房',
-    westStore: '西储', warehouse: '仓库', eastStore: '东储',
-    corridor: '走廊', southHall: '南过道', living: '客厅', foyer: '门厅', kitchen: '厨房',
-  };
-  const fills = {
-    foyer: '#3d4a3a', warehouse: '#2b3d4d', corridor: '#24303c',
-    southHall: '#24303c', living: '#3a3344', kitchen: '#3a3a32',
-    bedroom: '#3a3040', study: '#3a3040', westStore: '#32363c', eastStore: '#32363c',
-    northHall: '#2c343c',
-  };
-  const flip = (z) => 64 - z;
-  const wall = BUILDING;
-  let html = `<rect x="0" y="0" width="64" height="70" fill="#0a0e14"/>`;
-  html += `<rect x="1" y="${flip(63)}" width="62" height="14" fill="#151c24" stroke="#2a3440" stroke-width="0.3"/>`;
-  html += `<rect x="${wall.x0 - 2}" y="${flip(wall.z1 + 2)}" width="${wall.x1 - wall.x0 + 4}" height="${wall.z1 - wall.z0 + 4}" fill="#1a222c"/>`;
-  for (const [id, r] of Object.entries(ROOMS)) {
-    const y = flip(r.z1);
-    const h = r.z1 - r.z0;
-    const cx = (r.x0 + r.x1) / 2;
-    const cy = y + h / 2 + 0.6;
-    html += `<rect data-room="${names[id]}" x="${r.x0}" y="${y}" width="${r.x1 - r.x0}" height="${h}" fill="${fills[id] || '#2d3a4a'}" stroke="#5a6a78" stroke-width="0.2"/>`;
-    html += `<text x="${cx}" y="${cy}" text-anchor="middle" fill="#c5d0da" font-size="${id === 'corridor' || id === 'southHall' || id === 'northHall' ? 2.1 : 2.4}" font-family="Consolas,monospace">${names[id]}</text>`;
-  }
-  html += `<rect x="31" y="${flip(48)}" width="2" height="2" fill="#3fb96f"/>`;
-  html += `<rect x="31" y="${flip(7)}" width="2" height="2" fill="#4cc9f0"/>`;
-  html += `<rect x="5" y="${flip(21)}" width="2" height="2" fill="#4cc9f0"/>`;
-  html += `<rect x="56" y="${flip(21)}" width="2" height="2" fill="#4cc9f0"/>`;
-  html += `<circle cx="32.5" cy="${flip(58.5)}" r="1.4" fill="#f5a623" stroke="#fff" stroke-width="0.25"/>`;
-  html += `<text x="32.5" y="${flip(52)}" text-anchor="middle" fill="#f5a623" font-size="2.3">你</text>`;
-  html += `<text x="32" y="${flip(3)}" text-anchor="middle" fill="#4cc9f0" font-size="2.2">N 后门</text>`;
-  html += `<text x="32" y="68.5" text-anchor="middle" fill="#8b93a3" font-size="2.1">S 南庭院</text>`;
-  svg.innerHTML = html;
-  svg.querySelectorAll('rect[data-room]').forEach((el) => {
-    el.addEventListener('mouseenter', () => {
-      const cap = document.getElementById('map-cap');
-      if (cap) cap.textContent = el.getAttribute('data-room') + ' · 南门正对你，北墙是后门';
-    });
+/**
+ * 简报「地图」页：直接复用平面图共享渲染器，
+ * 和 floorplan.html / 任务选择屏缩略图是同一套图。
+ */
+function drawMapPage() {
+  const box = hud.mapFull;
+  if (!box) return;
+  const { svg } = renderFloorplanSvg(LEVEL.build(), {
+    theme: 'dark',
+    spawn: LEVEL.spawn,
+    doors: LEVEL.doors,
+    roomLabels: roomLabelList(LEVEL.rooms, LEVEL.roomLabels),
   });
+  box.innerHTML = svg;
+  const cap = document.getElementById('map-cap');
+  if (cap) cap.textContent = `${LEVEL.name} · ${LEVEL.subtitle}。悬停房间看名字。`;
 }
-drawMiniMap();
+drawMapPage();
 
 let briefPage = 0;
 const BRIEF_PAGES = 4;
@@ -311,8 +423,107 @@ document.querySelectorAll('[data-nade]').forEach((el) => {
   });
 });
 
+/**
+ * 武器页的图形：方块风格的枪廓形 + 三段属性条（伤害/射速/噪音）。
+ * 廓形只是为了「一眼看出是哪类枪」，精度不重要 — 和体素风格一致。
+ */
+const BAR_MAX = { damage: 90, rof: 12, noise: 44 };
+const BAR_LBL = { damage: '伤害', rof: '射速', noise: '噪音' };
+const GUN_ART = {
+  pistol: (c) =>
+    `<rect x="46" y="9" width="32" height="8" rx="1.5" fill="${c}"/>` +
+    `<rect x="52" y="17" width="10" height="14" rx="1.5" fill="${c}"/>` +
+    `<rect x="64" y="18" width="6" height="6" rx="1" fill="${c}"/>` +
+    `<rect x="82" y="11" width="8" height="4" rx="1" fill="${c}"/>`,
+  pistolFast: (c) =>
+    `<rect x="52" y="9" width="28" height="8" rx="1.5" fill="${c}"/>` +
+    `<rect x="58" y="17" width="9" height="13" rx="1.5" fill="${c}"/>` +
+    `<rect x="36" y="11" width="12" height="4" rx="1" fill="${c}"/>` +
+    `<rect x="84" y="11" width="6" height="4" rx="1" fill="${c}"/>`,
+  smg: (c) =>
+    `<rect x="6" y="6" width="10" height="7" rx="1" fill="${c}"/>` +
+    `<rect x="14" y="8" width="48" height="10" rx="2" fill="${c}"/>` +
+    `<rect x="60" y="10" width="24" height="6" rx="1.5" fill="${c}"/>` +
+    `<rect x="20" y="18" width="9" height="14" rx="1.5" fill="${c}"/>` +
+    `<rect x="34" y="18" width="14" height="8" rx="1" fill="${c}"/>`,
+  ar: (c) =>
+    `<rect x="2" y="6" width="10" height="14" rx="2" fill="${c}"/>` +
+    `<rect x="10" y="9" width="50" height="9" rx="2" fill="${c}"/>` +
+    `<rect x="60" y="11" width="26" height="6" rx="1.5" fill="${c}"/>` +
+    `<rect x="18" y="18" width="9" height="16" rx="1.5" fill="${c}"/>` +
+    `<rect x="32" y="18" width="12" height="9" rx="1" fill="${c}"/>` +
+    `<rect x="72" y="9" width="6" height="6" rx="1" fill="${c}"/>`,
+  shotgun: (c) =>
+    `<rect x="2" y="8" width="8" height="12" rx="2" fill="${c}"/>` +
+    `<rect x="8" y="10" width="66" height="8" rx="2" fill="${c}"/>` +
+    `<rect x="74" y="12" width="26" height="5" rx="1.5" fill="${c}"/>` +
+    `<rect x="28" y="18" width="10" height="12" rx="1.5" fill="${c}"/>` +
+    `<rect x="52" y="18" width="8" height="8" rx="1" fill="${c}"/>`,
+  dmr: (c) =>
+    `<rect x="8" y="8" width="12" height="4" rx="1" fill="${c}"/>` +
+    `<rect x="10" y="12" width="9" height="9" rx="1" fill="${c}"/>` +
+    `<rect x="18" y="10" width="42" height="7" rx="2" fill="${c}"/>` +
+    `<rect x="60" y="11" width="34" height="5" rx="1.5" fill="${c}"/>` +
+    `<rect x="26" y="17" width="9" height="16" rx="1.5" fill="${c}"/>` +
+    `<rect x="42" y="17" width="9" height="6" rx="1" fill="${c}"/>`,
+};
+const NADE_ART = {
+  flash: (c) =>
+    `<circle cx="46" cy="25" r="10" fill="#d8dee8"/>` +
+    `<rect x="55" y="21" width="16" height="5" rx="2" fill="#8b93a3"/>` +
+    `<path d="M30 8l4 6M64 6l-3 8M18 25h10M60 38l-4-6" stroke="#d8dee8" stroke-width="2" stroke-linecap="round"/>`,
+  he: (c) =>
+    `<circle cx="46" cy="25" r="10" fill="#4a5a3a"/>` +
+    `<rect x="55" y="21" width="16" height="5" rx="2" fill="#8b93a3"/>` +
+    `<path d="M42 19l4 4M50 24l-3 3" stroke="#8a9a6a" stroke-width="1.5" stroke-linecap="round"/>`,
+};
+function drawLoadoutVisuals() {
+  // 注意：外层卡片也带 data-nade/data-pistol 属性，必须限定到图标格 .gun 上，
+  // 否则 innerHTML 会把整张卡的标题和属性条一起覆盖掉。
+  document.querySelectorAll('.gun[data-gun]').forEach((el) => {
+    const id = el.dataset.gun;
+    const w = WEAPONS[id];
+    if (!w) return;
+    const c = '#' + w.color.toString(16).padStart(6, '0');
+    const art = GUN_ART[id] ?? GUN_ART.pistol;
+    el.innerHTML = `<svg viewBox="0 0 120 40">${art(c)}</svg>`;
+    const bars = document.querySelector(`[data-bars="${id}"]`);
+    if (bars) {
+      const val = (m) => m === 'damage'
+        ? Math.min(BAR_MAX[m], w.damage * (w.pellets ?? 1))
+        : m === 'rof' ? w.rof : w.noise;
+      bars.innerHTML = Object.keys(BAR_MAX).map((m) =>
+        `<span class="bar"><b>${BAR_LBL[m]}</b><i style="width:${Math.round(val(m) / BAR_MAX[m] * 100)}%"></i></span>`
+      ).join('');
+    }
+  });
+  document.querySelectorAll('.gun[data-nade]').forEach((el) => {
+    const id = el.dataset.nade;
+    el.innerHTML = `<svg viewBox="0 0 120 40">${NADE_ART[id]?.(id)}</svg>`;
+  });
+}
+drawLoadoutVisuals();
+
+/** 简报标题 / 目标文案跟着所选关卡走 */
+function fillBriefTexts() {
+  const sub = document.getElementById('brief-sub');
+  if (sub) sub.textContent = `${LEVEL.en} — ${LEVEL.subtitle}`;
+  const cap = document.getElementById('goal-cap');
+  if (cap) cap.textContent = LEVEL.blurb;
+}
+fillBriefTexts();
+
 function startMission() {
   if (game.started) return;
+  // 玩家在简报里换了难度（原地切换没重载）——现在才真正重载。
+  // 难度参数必须在创建玩家与敌人之前确定，运行时热切换会留下
+  // 一半旧值一半新值的混合状态，所以这里 reload，而不是就地改 D()。
+  if (pendingDiff !== D().id) {
+    const q = new URLSearchParams(location.search);
+    q.set('diff', pendingDiff);
+    location.href = location.pathname + '?' + q.toString();
+    return;
+  }
   loadout.setPistol(loadoutChoice.pistol);
   game.nadeKind = loadoutChoice.nade;
   game.nades = grenadeInventory(game.nadeKind, D().grenades);
@@ -326,6 +537,19 @@ function startMission() {
 hud.briefGo.addEventListener('click', startMission);
 window.addEventListener('keydown', (e) => {
   if (game.started) return;
+
+  // 任务选择屏：方向键选档案，Enter 进入简报
+  if (hud.missions && hud.missions.style.display !== 'none') {
+    if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
+      e.preventDefault();
+      moveMsSelection(e.code === 'ArrowRight' ? 1 : -1);
+    } else if (e.code === 'Enter' || e.code === 'Space') {
+      e.preventDefault();
+      openBrief();
+    }
+    return;
+  }
+
   if (e.code === 'Enter' || e.code === 'Space') {
     e.preventDefault();
     if (briefPage < BRIEF_PAGES - 1) showBriefPage(briefPage + 1);
@@ -344,6 +568,11 @@ if (sessionStorage.getItem('skipBrief') === '1') {
   sessionStorage.removeItem('skipBrief');
   startMission();
 }
+
+// 选择屏渲染顺序：先建卡片，再定初始选中项（已解锁关卡）
+buildMissionCards();
+msIndex = Math.max(0, msCards.findIndex((c) => c.dataset.level === LEVEL.id));
+paintMsSelection();
 
 /**
  * 撤离点：12/12 后在出生点亮起绿色方块。
@@ -673,8 +902,9 @@ function frame(nowMs) {
     }
     // 敌人手电：光源池按距离分配给最近的几个（远处的灯玩家看不清，不值一个光源）
     enemyLights.update(enemies, player.pos, now);
-    // 头顶状态指示器：用相机位置做距离裁剪（第三人称下相机才是"眼睛"）
-    indicators.update(cam.cam.position, now, dt);
+    // 头顶状态指示器：用相机位置做距离裁剪（第三人称下相机才是"眼睛"）。
+    // 只剩最后 3 个敌人时无视距离与平静隐藏、全部亮标 —— 保证胜利条件永远可达。
+    indicators.update(cam.cam.position, now, dt, game.totalEnemies - game.killed <= 3);
 
     // ── 门 ──
     // E 键开关最近的门。门在体素网格里是实心方块，开关会改动网格，
@@ -682,7 +912,7 @@ function frame(nowMs) {
     const nearDoor = doors.nearest(
       player.pos.x, player.pos.y + 1, player.pos.z, 2.2
     );
-    if (nearDoor && input.pressed.has('KeyE')) {
+    if (nearDoor && input.pressed.has('KeyX')) {
       /**
        * 关门前检查门洞里有没有人。站在门洞里关门会把实心方块写在自己
        * 身上，碰撞盒被完全包住，玩家彻底卡死在墙里只能重开 —— 而这是
@@ -809,6 +1039,11 @@ function frame(nowMs) {
   }
   const alive = enemies.filter((e) => !e.dead).length;
   hud.enemies.textContent = `${alive} / ${game.totalEnemies}`;
+  // 收尾提示（一次）：剩下的敌人全图亮标，玩家不会再找不到人、无法通关
+  if (!game.revealed && alive > 0 && alive <= 3) {
+    game.revealed = true;
+    toast('剩余目标已暴露 · 肃清他们', 2600);
+  }
   hud.dbgShots.textContent = String(combat.stats.shots);
   hud.dbgHits.textContent = String(combat.stats.hits);
   hud.dbgFire.textContent = fireDebug;

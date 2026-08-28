@@ -134,8 +134,10 @@ export class EnemyIndicators {
   /**
    * @param viewPos 相机（或玩家）位置，用来做距离裁剪
    * @param now     秒，驱动脉动
+   * @param forceReveal 收尾阶段：只剩最后几个敌人时无视距离与平静隐藏，
+   *                     全部亮标 —— 否则黑楼里找不到最后一个人，游戏永远无法结束。
    */
-  update(viewPos, now, dt) {
+  update(viewPos, now, dt, forceReveal = false) {
     const d = D();
     for (const it of this.items) {
       const e = it.enemy;
@@ -146,9 +148,9 @@ export class EnemyIndicators {
 
       const dist = Math.hypot(e.pos.x - viewPos.x, e.pos.z - viewPos.z);
       // 超出难度设定的可见范围 → 不显示（这是难度的核心差异之一）
-      if (dist > d.indicatorRange) { it.group.visible = false; continue; }
+      if (dist > d.indicatorRange && !forceReveal) { it.group.visible = false; continue; }
       // 困难/专家：平静状态不给情报，玩家得自己找人
-      if (tier === 'calm' && !d.showIdleIndicator) {
+      if (tier === 'calm' && !d.showIdleIndicator && !forceReveal) {
         it.group.visible = false;
         continue;
       }

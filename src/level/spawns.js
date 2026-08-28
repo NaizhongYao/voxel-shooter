@@ -1,4 +1,5 @@
 import { ARCHETYPE } from '../systems/enemy.js';
+import { itemAt } from './furniture.js';
 
 /**
  * 12 个敌人的出生点池（GDD 12 章 + 10 章关卡规则）。
@@ -17,10 +18,10 @@ import { ARCHETYPE } from '../systems/enemy.js';
  * 完全是两种紧张感。每个敌人标一个 tier（1/2/3），main.js 按
  * `D().enemyTier` 过滤出当前难度要生成的子集：
  *
- *   tier 1（简单 7 人）：核心布置，覆盖 6 个以上房间，伏击/巡逻比例
+ *   tier 1（简单 10 人）：核心布置，覆盖 7 个以上房间，伏击/巡逻比例
  *                        与原版一致，保证「找得到、打得过」。
- *   tier 2（困难 10 人）：追加 3 人，补上主走廊与仓库的纵深火力。
- *   tier 3（专家 12 人）：追加 2 人，全楼铺满，含庭院教学区的巡逻者。
+ *   tier 2（困难 13 人）：追加 3 人，补上主走廊与仓库的纵深火力。
+ *   tier 3（专家 15 人）：追加 2 人，全楼铺满，含庭院教学区的巡逻者。
  *
  * 分层是手工挑选、不是随机抽取 —— 随机会导致同一难度下每局房间覆盖度
  * 不一样（可能巡逻者全挤在一个区域），无法保证空间分布，也没法写死
@@ -158,24 +159,30 @@ export const ENEMY_SPAWNS = [
 ];
 
 /**
- * 敌人数量随难度：简单/困难/专家分别应该看到多少个。测试与文案共用。
+ * 敌人数量随难度：简单/困难/专家分别应该看到多少个。
  *
- * tier 分配核实过的关键属性（每档独立成立，不是只看累积总量）：
- *   简单（tier1，7人）：伏击者3 · 巡逻者4 · 武装1 · 覆盖 7 个房间
- *   困难（tier≤2，10人）：伏击者3 · 巡逻者7 · 武装2 · 覆盖 8 个房间
- *   专家（tier≤3，12人）：伏击者4 · 巡逻者8 · 武装3 · 覆盖 8 个房间
+ * ══ 唯一来源：这里不再写死数字，直接从 ENEMY_SPAWNS 的 tier 过滤推导。
+ * 否则「简报显示的敌人数量」和「游戏实际生成的敌人数量」是两份数据，
+ * 加一个巡逻兵或调一次 tier 就会前后对不上 —— 这正是任务简报报错数的根因。
+ * 要改人数就去改 ENEMY_SPAWNS 的 tier 分配，数字自动跟上。
  */
-export const ENEMY_COUNT_BY_TIER = { 1: 10, 2: 13, 3: 15 };
+function countTier(maxTier) {
+  return ENEMY_SPAWNS.filter((s) => s.tier <= maxTier).length;
+}
+export const ENEMY_COUNT_BY_TIER = { 1: countTier(1), 2: countTier(2), 3: countTier(3) };
 
-/** 医疗包：全关仅 3 个，固定位置，敌人不掉落 */
+/**
+ * 拾取物清单：全部从共享目录 itemAt() 生成（src/level/furniture.js 的 ITEMS）。
+ * 以后新增物品只要往 ITEMS 里加名字，这里按名字点即可。
+ */
 export const MEDKIT_SPAWNS = [
-  { x: 16.5, y: Y1 + 0.4, z: 34.5 },   // 南侧过道西段
-  { x: 41.5, y: Y1 + 0.4, z: 19.5 },   // 仓库东侧
-  { x: 30.5, y: Y1 + 0.4, z: 28.5 },   // 主走廊中段
+  itemAt('medkit', 16.5, 34.5),   // 南侧过道西段
+  itemAt('medkit', 41.5, 19.5),   // 仓库东侧
+  itemAt('medkit', 30.5, 28.5),   // 主走廊中段
 ];
 
 /** 初始武器拾取：让玩家早期就能升级掉手枪 */
 export const WEAPON_SPAWNS = [
-  { x: 32.5, y: Y1 + 0.4, z: 44.5, weapon: 'smg' },   // 门厅（进门就能捡）
-  { x: 30.5, y: Y1 + 0.4, z: 22.5, weapon: 'ar' },    // 仓库
+  itemAt('smg', 32.5, 44.5),      // 门厅（进门就能捡）
+  itemAt('ar', 30.5, 22.5),       // 仓库
 ];

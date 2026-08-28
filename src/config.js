@@ -320,8 +320,8 @@ export const INPUT = {
   forward: ['KeyW'], back: ['KeyS'], left: ['KeyA'], right: ['KeyD'],
   jump: ['Space'], crouch: ['ShiftLeft', 'ShiftRight'],
   slow: ['ControlLeft', 'ControlRight'],
-  // 倾斜用 Q / Z：E 让给「开门」，因为门是本作最高频的交互
-  leanLeft: ['KeyQ'], leanRight: ['KeyZ'],
+  // 倾斜 Q / E（左右探头），开门 X，手电 F（保持原键位）
+  leanLeft: ['KeyQ'], leanRight: ['KeyE'],
   flashlight: ['KeyF'],
   toggleView: ['KeyC'],
   grenade: ['Digit3'],
