@@ -54,6 +54,13 @@ const SPAWN = LEVEL.spawn;
  * 这样难度卡点击是即时的，游戏内数值又永远是自洽的一组。
  */
 let pendingDiff = D().id;
+/**
+ * 任务选择屏里选中的关卡。和难度一样：简报阶段只改这个变量与 URL 显示，
+ * 点「开始任务」时若与页面实际加载的 LEVEL 不一致，先带 ?map= 重载。
+ * 运行时世界（world/门/敌人/拾取物）全部在模块初始化时按 LEVEL 建好，
+ * 原地换关等于要重建一切 —— 重载一次反而最可靠。
+ */
+let pendingLevel = LEVEL;
 const hud = {
   fps: $('fps'), pos: $('pos'), stance: $('stance'), light: $('light'),
   view: $('view'),
@@ -284,7 +291,11 @@ function buildMissionCards() {
         </div>`;
     }
     if (!lv.future && !lv.locked) {
-      el.addEventListener('click', () => openBrief());
+      el.addEventListener('click', () => {
+        msIndex = i;
+        paintMsSelection();
+        openBrief();
+      });
     } else if (lv.locked) {
       el.addEventListener('click', () => {
         el.classList.add('shake');
@@ -308,6 +319,15 @@ function moveMsSelection(dm) {
 }
 
 function openBrief() {
+  // 简报内容跟着「选中的关卡」走，而不是页面加载时的 LEVEL。
+  const card = msCards[msIndex];
+  const lv = LEVELS.find((l) => l.id === card?.dataset.level);
+  if (!lv || lv.locked) return;   // 占位 / 未解锁卡片不进入简报
+  pendingLevel = lv;
+  fillBriefTexts();
+  buildDifficultyCards();
+  refreshBriefCounts();
+  drawMapPage();
   hud.missions.style.display = 'none';
   hud.brief.style.display = 'flex';
   showBriefPage(0);
@@ -320,7 +340,7 @@ function openBrief() {
  */
 function refreshBriefCounts() {
   const diff = DIFFICULTIES[pendingDiff] ?? D();
-  const n = countEnemies(LEVEL.spawns, diff.enemyTier);
+  const n = countEnemies(pendingLevel.spawns, diff.enemyTier);
   if (hud.hintCount) hud.hintCount.textContent = n;
 }
 
@@ -337,7 +357,7 @@ function buildDifficultyCards() {
     el.className = 'diff' + (d.id === pendingDiff ? ' on' : '');
     const hex = `#${d.color.toString(16).padStart(6, '0')}`;
     const hpPct = Math.round((d.hpMax / 120) * 100);
-    const enemies = countEnemies(LEVEL.spawns, d.enemyTier);
+    const enemies = countEnemies(pendingLevel.spawns, d.enemyTier);
     el.innerHTML =
       `<div class="dn" style="color:${hex}">${d.name}</div>` +
       `<div class="ds">${d.subtitle}</div>` +
@@ -369,15 +389,15 @@ refreshBriefCounts();
 function drawMapPage() {
   const box = hud.mapFull;
   if (!box) return;
-  const { svg } = renderFloorplanSvg(LEVEL.build(), {
+  const { svg } = renderFloorplanSvg(pendingLevel.build(), {
     theme: 'dark',
-    spawn: LEVEL.spawn,
-    doors: LEVEL.doors,
-    roomLabels: roomLabelList(LEVEL.rooms, LEVEL.roomLabels),
+    spawn: pendingLevel.spawn,
+    doors: pendingLevel.doors,
+    roomLabels: roomLabelList(pendingLevel.rooms, pendingLevel.roomLabels),
   });
   box.innerHTML = svg;
   const cap = document.getElementById('map-cap');
-  if (cap) cap.textContent = `${LEVEL.name} · ${LEVEL.subtitle}。悬停房间看名字。`;
+  if (cap) cap.textContent = `${pendingLevel.name} · ${pendingLevel.subtitle}。悬停房间看名字。`;
 }
 drawMapPage();
 
@@ -507,20 +527,22 @@ drawLoadoutVisuals();
 /** 简报标题 / 目标文案跟着所选关卡走 */
 function fillBriefTexts() {
   const sub = document.getElementById('brief-sub');
-  if (sub) sub.textContent = `${LEVEL.en} — ${LEVEL.subtitle}`;
+  if (sub) sub.textContent = `${pendingLevel.en} — ${pendingLevel.subtitle}`;
   const cap = document.getElementById('goal-cap');
-  if (cap) cap.textContent = LEVEL.blurb;
+  if (cap) cap.textContent = pendingLevel.blurb;
 }
 fillBriefTexts();
 
 function startMission() {
   if (game.started) return;
-  // 玩家在简报里换了难度（原地切换没重载）——现在才真正重载。
-  // 难度参数必须在创建玩家与敌人之前确定，运行时热切换会留下
-  // 一半旧值一半新值的混合状态，所以这里 reload，而不是就地改 D()。
-  if (pendingDiff !== D().id) {
+  // 玩家在简报里换了难度或关卡（原地切换没重载）——现在才真正重载。
+  // 难度参数必须在创建玩家与敌人之前确定，关卡同理（整个世界都在
+  // 模块初始化时按 LEVEL 建好），运行时热切换会留下混合状态，所以这里
+  // reload，而不是就地改 D() / 重建世界。
+  if (pendingDiff !== D().id || pendingLevel.id !== LEVEL.id) {
     const q = new URLSearchParams(location.search);
-    q.set('diff', pendingDiff);
+    if (pendingDiff !== D().id) q.set('diff', pendingDiff);
+    if (pendingLevel.id !== LEVEL.id) q.set('map', pendingLevel.id);
     location.href = location.pathname + '?' + q.toString();
     return;
   }
