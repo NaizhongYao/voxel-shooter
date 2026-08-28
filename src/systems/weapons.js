@@ -1,4 +1,4 @@
-import { PALETTE } from '../config.js';
+import { PALETTE, PLAYER } from '../config.js';
 
 /**
  * 武器数据表（GDD 07 章）。纯数据，便于调参。
@@ -7,6 +7,7 @@ import { PALETTE } from '../config.js';
  * AR 3 枪、手枪 3 枪、SMG 5 枪、霰弹贴脸 1 枪、DMR 1 枪，任意武器爆头 1 枪。
  *
  * 单位：伤害为点数；rof 发/秒；spread 度；range/noise 为 vox；reload 秒。
+ * sound: 合成枪声的档位（light / medium / heavy），见 systems/audio.js。
  */
 export const WEAPONS = {
   pistol: {
@@ -19,6 +20,7 @@ export const WEAPONS = {
     pellets: 1,
     recoil: { kick: 0.45, climb: 1.5, shake: 0.16 },
     muzzleScale: 0.34, tracer: 0.5,
+    sound: 'light',
     slot: 1,
   },
   smg: {
@@ -30,6 +32,7 @@ export const WEAPONS = {
     reserve: 96, pellets: 1,
     recoil: { kick: 0.3, climb: 2.6, shake: 0.13 },
     muzzleScale: 0.3, tracer: 0.45,
+    sound: 'light',
     slot: 2,
   },
   shotgun: {
@@ -39,9 +42,12 @@ export const WEAPONS = {
     spread: 18.0, mag: 6, reload: 2.4,
     range: 16, pierce: 1, noise: 40,
     reserve: 24, pellets: 8,
+    // 弹丸向锥心聚集：保证「贴脸一枪致死」，同时远距离依然散得很开
+    pelletConcentrate: 3.2,
     recoil: { kick: 1.0, climb: 5.5, shake: 0.55 },
     muzzleScale: 0.62, tracer: 0.3,
     falloff: true,                     // 超出射程后快速衰减
+    sound: 'heavy',
     slot: 2,
   },
   ar: {
@@ -53,6 +59,7 @@ export const WEAPONS = {
     reserve: 90, pellets: 1,
     recoil: { kick: 0.5, climb: 2.1, shake: 0.2 },
     muzzleScale: 0.4, tracer: 0.6,
+    sound: 'medium',
     slot: 2,
   },
   dmr: {
@@ -64,6 +71,7 @@ export const WEAPONS = {
     reserve: 15, pellets: 1,
     recoil: { kick: 0.9, climb: 4.2, shake: 0.42 },
     muzzleScale: 0.5, tracer: 0.9,
+    sound: 'heavy',
     slot: 2,
   },
 };
@@ -99,9 +107,9 @@ export class WeaponInstance {
     return !this.reloading && this.ammo < this.spec.mag && this.reserve > 0;
   }
 
-  /** 当前实际散布（度）：基础 × 姿态倍率 + 后坐抬枪 */
+  /** 当前实际散布（度）：基础 × 全局缩放 × 姿态/瞄准倍率 + 后坐抬枪 */
   currentSpread(stanceMul) {
-    return this.spec.spread * stanceMul + this.climb;
+    return this.spec.spread * PLAYER.spreadScale * stanceMul + this.climb;
   }
 
   canFire(now) {
@@ -186,11 +194,30 @@ export class Loadout {
     return old;
   }
 
-  /** 补充当前武器类型的备弹 */
+  /**
+   * 补充备弹。
+   *
+   * ══ 原来的实现有个玩家一定会撞上的坑 ══
+   *
+   * 旧版只给「当前手持的武器」加弹，且手枪备弹是 Infinity 直接 return false。
+   * 于是两种极常见的情况下弹药盒完全捡不起来：
+   *   1. 玩家还没捡到主武器（只有手枪）—— 开局阶段全部弹药盒都是废的
+   *   2. 玩家有 AR 但临时切回手枪 —— 明明 AR 快没弹了，却补不进去
+   * 返回 false 会让 PickupManager 不消耗那个拾取物，弹药盒就永远躺在地上，
+   * 玩家反复走过去毫无反应，只会以为是 bug。
+   *
+   * 现在改成「优先补主武器，主武器不需要才补手枪」，
+   * 并且无限备弹的武器不算「需要」。只要有任何一把枪能吃下这些弹药就返回 true。
+   */
   addAmmo(amount) {
-    const w = this.current;
-    if (!w || w.reserve === Infinity) return false;
-    w.reserve += amount;
+    // 需要补弹的候选：有限备弹、且没满到不需要
+    const wants = this.slots.filter((w) => w && w.reserve !== Infinity);
+    if (wants.length === 0) return false;
+
+    // 优先给主武器（槽 2）—— 那是玩家真正在用的枪
+    const primary = this.slots[1];
+    const target = (primary && primary.reserve !== Infinity) ? primary : wants[0];
+    target.reserve += amount;
     return true;
   }
 

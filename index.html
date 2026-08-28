@@ -27,13 +27,28 @@
   #crosshair i:nth-child(4){ top:0; left:var(--gap); height:2px; width:8px; }
   #crosshair.blocked i{ background:var(--threat); }
 
-  /* 左下：HP */
+  /* 左下：护甲 + 生命。护甲在上、生命在下 —— 扣血顺序也是从上到下 */
   #status{ position:absolute; left:22px; bottom:22px; }
-  #hp-bar{ width:230px; height:15px; background:rgba(0,0,0,.6);
+  #armor-bar{ width:260px; height:12px; background:rgba(0,0,0,.6);
+    border:1px solid var(--rule); position:relative; margin-bottom:4px; }
+  #armor-fill{ position:absolute; inset:1px; width:100%;
+    background:linear-gradient(90deg,#4cc9f0,#8fd8ee); transition:width .18s; }
+  #hp-bar{ width:260px; height:26px; background:rgba(0,0,0,.6);
     border:1px solid var(--rule); position:relative; }
   #hp-fill{ position:absolute; inset:1px; width:100%;
     background:linear-gradient(90deg,#e5484d,#f5a623); transition:width .18s; }
   #hp-text{ font-size:.72rem; letter-spacing:.14em; color:var(--muted); margin-top:6px; }
+  #hp-text b{ color:var(--cyan); font-weight:600; }
+  /* 生命见底时血条自己也脉动，不只靠屏幕红晕 */
+  #hp-bar.low #hp-fill{ animation:hpPulse .8s ease-in-out infinite; }
+  @keyframes hpPulse{ 0%,100%{opacity:1} 50%{opacity:.45} }
+
+  /* 手雷计数 */
+  #nade-box{ position:absolute; right:24px; bottom:104px; text-align:right;
+    font-size:.7rem; letter-spacing:.14em; color:var(--muted); }
+  #nade-box .n{ font-size:1.3rem; font-weight:700; color:var(--good);
+    letter-spacing:.06em; }
+  #nade-box.empty .n{ color:var(--muted); }
 
   /* 右下：弹药 */
   #ammo-box{ position:absolute; right:24px; bottom:20px; text-align:right; }
@@ -88,6 +103,16 @@
   #damage-flash{ position:absolute; inset:0; opacity:0; pointer-events:none;
     box-shadow:inset 0 0 180px 50px rgba(229,72,77,.85); transition:opacity .1s; }
 
+  /**
+   * 低血警告：屏幕边缘持续的红色脉冲。
+   * 与 #damage-flash 分开是有意的 —— 那个是「刚被打中」的一次性闪光，
+   * 这个是「你快死了」的持续状态。两者可以叠加。
+   */
+  #lowhp{ position:absolute; inset:0; opacity:0; pointer-events:none;
+    box-shadow:inset 0 0 200px 70px rgba(229,72,77,.9);
+    animation:lowPulse 1.05s ease-in-out infinite; }
+  @keyframes lowPulse{ 0%,100%{ filter:brightness(.65) } 50%{ filter:brightness(1.35) } }
+
   /* 结算 */
   #banner{ display:none; position:absolute; inset:0; align-items:center;
     justify-content:center; flex-direction:column; gap:14px;
@@ -107,6 +132,71 @@
   #hint .big{ font-size:1.1rem; letter-spacing:.3em; color:var(--amber); }
   #hint .small{ font-size:.72rem; color:var(--muted); letter-spacing:.12em; }
 
+  /* ══ 任务简报（开局界面）══════════════════════════════════════════ */
+  #brief{ position:absolute; inset:0; display:flex; align-items:center;
+    justify-content:center; background:rgba(8,10,14,.94); overflow-y:auto;
+    pointer-events:auto; }
+  #brief-inner{ width:min(940px,92vw); padding:26px 30px 22px;
+    border:1px solid var(--rule); background:rgba(12,16,22,.96); }
+  #brief h2{ font-size:1.0rem; letter-spacing:.3em; color:var(--amber);
+    font-weight:700; }
+  #brief .sub{ font-size:.64rem; letter-spacing:.22em; color:var(--muted);
+    margin-top:4px; }
+  #brief hr{ border:0; border-top:1px solid var(--rule); margin:16px 0 14px; }
+  .bsec{ margin-bottom:15px; }
+  .bsec > .h{ font-size:.63rem; letter-spacing:.24em; color:var(--cyan);
+    margin-bottom:7px; }
+  .bsec p, .bsec li{ font-size:.73rem; line-height:1.85; color:var(--ink);
+    letter-spacing:.03em; }
+  .bsec ul{ list-style:none; }
+  .bsec li{ padding-left:14px; position:relative; }
+  .bsec li::before{ content:'·'; position:absolute; left:3px; color:var(--amber); }
+  .bsec b{ color:var(--amber); }
+  .bcols{ display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+
+  /* 敌人类型卡 */
+  .etype{ display:flex; gap:9px; align-items:flex-start; margin-bottom:9px; }
+  .etype .sw{ width:11px; height:11px; flex:0 0 11px; margin-top:4px;
+    border:1px solid rgba(255,255,255,.25); }
+  .etype .tx{ font-size:.71rem; line-height:1.7; }
+  .etype .tx b{ color:var(--ink); }
+
+  /* 状态指示器图例 */
+  .legend{ display:flex; flex-wrap:wrap; gap:7px 16px; }
+  .legend span{ font-size:.69rem; display:flex; align-items:center; gap:6px;
+    color:var(--muted); }
+  .legend i{ width:10px; height:10px; display:inline-block;
+    border:1px solid rgba(255,255,255,.22); }
+
+  /* 难度选择 */
+  #diffs{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px;
+    margin-top:4px; }
+  .diff{ border:1px solid var(--rule); background:rgba(0,0,0,.35);
+    padding:11px 12px; cursor:pointer; transition:border-color .15s,background .15s; }
+  .diff:hover{ background:rgba(255,255,255,.05); }
+  .diff.on{ border-color:var(--amber); background:rgba(245,166,35,.1); }
+  .diff .dn{ font-size:.86rem; font-weight:700; letter-spacing:.14em; }
+  .diff .ds{ font-size:.56rem; letter-spacing:.2em; color:var(--muted); margin-top:2px; }
+  .diff .dd{ font-size:.66rem; line-height:1.65; color:var(--muted); margin-top:7px; }
+  .diff .dstat{ font-size:.63rem; color:var(--ink); margin-top:7px;
+    letter-spacing:.04em; }
+
+  #brief-go{ margin-top:16px; width:100%; padding:12px;
+    background:var(--amber); color:#12161d; border:0; cursor:pointer;
+    font-family:var(--mono); font-size:.82rem; font-weight:700;
+    letter-spacing:.22em; }
+  #brief-go:hover{ filter:brightness(1.12); }
+
+  /* ══ 暴露度指示（HUD 顶部）══════════════════════════════════════ */
+  #expose{ position:absolute; left:50%; top:78px; transform:translateX(-50%);
+    width:190px; text-align:center; opacity:0; transition:opacity .2s; }
+  #expose .lbl{ font-size:.58rem; letter-spacing:.24em; color:var(--threat);
+    margin-bottom:3px; }
+  #expose-bar{ height:4px; background:rgba(0,0,0,.65);
+    border:1px solid var(--rule); }
+  #expose-fill{ height:100%; width:0%; background:var(--amber);
+    transition:width .12s, background-color .2s; }
+
   .vig{ position:absolute; inset:0; box-shadow:inset 0 0 220px 60px rgba(0,0,0,.85); }
 
   #err{ display:none; position:absolute; left:22px; top:92px; max-width:70vw;
@@ -120,6 +210,7 @@
 
 <div id="ui">
   <div class="vig"></div>
+  <div id="lowhp"></div>
   <div id="damage-flash"></div>
 
   <div id="title">
@@ -137,18 +228,23 @@
     <div class="row"><span class="k">POS</span><span class="v" id="pos">–</span></div>
     <div class="row"><span class="k">STANCE</span><span class="v" id="stance">NORMAL</span></div>
     <div class="row"><span class="k">FLASHLIGHT</span><span class="v on" id="light">ON</span></div>
+    <div class="row"><span class="k">VIEW</span><span class="v" id="view">3RD</span></div>
     <div class="row"><span class="k">SHOTS</span><span class="v" id="dbg-shots">0</span></div>
     <div class="row"><span class="k">HITS</span><span class="v" id="dbg-hits">0</span></div>
     <div class="row"><span class="k">FIRE</span><span class="v" id="dbg-fire">–</span></div>
+    <div class="row"><span class="k">KEYS</span><span class="v" id="dbg-keys">0</span></div>
     <hr><div id="boot">building…</div>
   </div>
 
   <div id="crosshair"><i></i><i></i><i></i><i></i></div>
 
   <div id="status">
+    <div id="armor-bar"><div id="armor-fill"></div></div>
     <div id="hp-bar"><div id="hp-fill"></div></div>
-    <div id="hp-text">60 / 60</div>
+    <div id="hp-text">100 / 100 · <b>护甲 200</b></div>
   </div>
+
+  <div id="nade-box">手雷 <span class="n" id="nade-count">3</span></div>
 
   <div id="ammo-box">
     <div id="weapon-name">M19</div>
@@ -168,8 +264,13 @@
     <span><b>1/2</b> 换枪</span>
     <span><b>Ctrl</b> 慢走</span>
     <span><b>Shift</b> 蹲</span>
-    <span><b>Q/E</b> 倾斜</span>
+    <span><b>E</b> 开门</span>
+    <span><b>Q/Z</b> 倾斜</span>
     <span><b>F</b> 手电</span>
+    <span><b>C</b> 视角</span>
+    <span><b>3</b> 手雷</span>
+    <span><b>M</b> 静音</span>
+    <span><b>N</b> 音乐</span>
   </div>
 
   <div id="banner">
@@ -180,6 +281,94 @@
   <div id="hint">
     <div class="big">点击进入</div>
     <div class="small">清掉全部 12 个敌人 · 返回庭院撤离 · ESC 退出</div>
+  </div>
+
+  <div id="expose">
+    <div class="lbl">暴露度</div>
+    <div id="expose-bar"><div id="expose-fill"></div></div>
+  </div>
+
+  <div id="brief">
+    <div id="brief-inner">
+      <h2>任务简报 · 肃清协议</h2>
+      <div class="sub">OPERATION BLACKHOUSE — 单人清剿 · 无支援 · 无重生</div>
+      <hr>
+
+      <div class="bcols">
+        <div>
+          <div class="bsec">
+            <div class="h">任务目标</div>
+            <ul>
+              <li>清除建筑内全部 <b>12 名</b>敌对目标</li>
+              <li>完成后返回<b>南侧庭院</b>的绿色标记点撤离</li>
+              <li>没有存档点，阵亡即任务失败</li>
+            </ul>
+          </div>
+
+          <div class="bsec">
+            <div class="h">地形情报</div>
+            <ul>
+              <li>单层平房，<b>南侧正门</b>已敞开，东侧另有一扇侧门</li>
+              <li>由南向北依次是：<b>门厅 / 客厅 / 厨房</b> → 南过道 →
+                  <b>主走廊</b> → <b>仓库</b>与两侧储藏 → 卧室 / 书房</li>
+              <li>主走廊有<b>错位墙垛</b>，一眼看不到底，推进必须切角</li>
+              <li>室内<b>没有任何光源</b>，只有庭院有月光</li>
+              <li>医疗包 <b>3 个</b>（过道 / 仓库 / 走廊），另有 SMG 与 AR 各一把</li>
+            </ul>
+          </div>
+        </div>
+
+        <div>
+          <div class="bsec">
+            <div class="h">敌情：两类行为</div>
+            <div class="etype">
+              <span class="sw" style="background:#e5484d"></span>
+              <span class="tx"><b>伏击者 ×4</b> — 蹲在暗处不动、<b>不开手电</b>。
+                多为霰弹枪，贴脸极度危险。转角必须先探头。</span>
+            </div>
+            <div class="etype">
+              <span class="sw" style="background:#f5a623"></span>
+              <span class="tx"><b>巡逻者 ×8</b> — 沿固定路线走动、<b>手电常亮</b>。
+                远处扫过来的光柱就是预警。被发现会呼叫附近同伴。</span>
+            </div>
+          </div>
+
+          <div class="bsec">
+            <div class="h">头顶状态指示器</div>
+            <div class="legend">
+              <span><i style="background:#6b7480"></i>平静 未察觉</span>
+              <span><i style="background:#f5d76e"></i>搜索 察觉异常</span>
+              <span><i style="background:#f5a623"></i>警戒 正在举枪</span>
+              <span><i style="background:#e5484d"></i>战斗 已开火</span>
+            </div>
+            <p style="margin-top:8px;color:#8b93a3">
+              方块下方的横条是<b>警戒度</b>，涨满即进入战斗。
+              指示器可见距离随难度递减。
+            </p>
+          </div>
+
+          <div class="bsec">
+            <div class="h">关键战术</div>
+            <ul>
+              <li><b>关掉手电（F）可大幅降低警戒度</b> —— 回落速度是开灯时的
+                  6 倍，脱战时间缩短一半以上</li>
+              <li>手电光斑会先于你被发现，别把光扫到敌人身上</li>
+              <li>Ctrl 慢走 / Shift 蹲伏可显著降低脚步噪音</li>
+              <li>Q/Z 侧身探头，视野探出墙角而命中盒不动</li>
+              <li>护甲先于生命扣除，护甲破了就该撤了</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <hr>
+      <div class="bsec" style="margin-bottom:0">
+        <div class="h">选择难度</div>
+        <div id="diffs"></div>
+      </div>
+
+      <button id="brief-go">开始任务</button>
+    </div>
   </div>
 
   <pre id="err"></pre>

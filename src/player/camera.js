@@ -1,6 +1,11 @@
 import * as THREE from 'three';
 import { CAMERA, PLAYER } from '../config.js';
 
+/** 相机回拉的采样点（中心 + 四角），单位为 probeRadius 的倍数 */
+const CAMERA_PROBES = [
+  [0, 0], [-1, -1], [1, -1], [-1, 1], [1, 1],
+];
+
 /**
  * 第三人称越肩相机。
  *  - 相机绕「肩部锚点」布置：右 0.7 / 上 1.8 / 后 3.2 vox
@@ -19,12 +24,16 @@ export class OrbitFollowCamera {
     this.aiming = false;
     this.leanAmt = 0;
     this.shake = 0;
+    this.firstPerson = false;     // C 键切换；第一人称复用同一套射击逻辑
 
     this._anchor = new THREE.Vector3();
     this._desired = new THREE.Vector3();
     this._current = new THREE.Vector3();
     this._look = new THREE.Vector3();
     this._dir = new THREE.Vector3();
+    this._view = new THREE.Vector3(0, 0, -1);   // 当前视线单位向量
+    this._probeRight = new THREE.Vector3();
+    this._probeUp = new THREE.Vector3();
     this._initialised = false;
     this._roll = 0;
   }
@@ -64,29 +73,73 @@ export class OrbitFollowCamera {
     this._anchor.x += cy * leanShift;
     this._anchor.z -= sy * leanShift;
 
-    // 目标相机位（局部 → 世界）
-    const lx = off.x, ly = off.y - PLAYER.eyeHeight, lz = off.z;
+    // 视线方向（yaw + pitch）。这是准星真正指向的方向。
     const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
-    // 先按 pitch 旋转（绕右轴），再按 yaw 旋转（绕 Y）
-    const py = ly * cp + lz * sp;
-    const pz = lz * cp - ly * sp;
+    this._view.set(-sy * cp, sp, -cy * cp);
+
+    // ── 第一人称：相机直接放在眼睛位置，不做环绕与回拉 ──
+    // 复用同一套 yaw/pitch 与 _view，所以射击逻辑完全不需要分支。
+    if (this.firstPerson) {
+      this._desired.copy(this._anchor).addScaledVector(this._view, CAMERA.fpForward);
+      if (!this._initialised) { this._current.copy(this._desired); this._initialised = true; }
+      // 第一人称不做位置平滑，否则快速转身会有拖影感
+      this._current.copy(this._desired);
+      this.cam.position.copy(this._current);
+      this._look.copy(this._current).addScaledVector(this._view, 12);
+      this.cam.lookAt(this._look);
+
+      this._roll += (-this.leanAmt * 0.16 - this._roll) * Math.min(1, dt * 8);
+      this.cam.rotateZ(this._roll);
+      this.applyShake(dt);
+
+      const fpFov = this.aiming ? CAMERA.fpAdsFov : CAMERA.fpFov;
+      if (Math.abs(this.cam.fov - fpFov) > 0.05) {
+        this.cam.fov += (fpFov - this.cam.fov) * Math.min(1, dt * 12);
+        this.cam.updateProjectionMatrix();
+      }
+      return;
+    }
+
+    // 目标相机位 = 锚点 - 视线 × 后退距离 + 右 × 横向偏移 + 世界上 × 抬高
+    //
+    // 之前这里手写了一个绕右轴的旋转，符号是反的：抬头时相机往上跑、
+    // 低头时相机沉到地板以下，角色看起来就像趴在地上。
+    // 改成标准环绕公式后，低头相机升高俯视、抬头相机降低仰视，行为正确。
+    const lx = off.x, ly = off.y - PLAYER.eyeHeight, lz = off.z;
     this._desired.set(
-      this._anchor.x + cy * lx + (-sy) * pz,
-      this._anchor.y + py,
-      this._anchor.z + (-sy) * lx + (-cy) * pz
+      this._anchor.x - this._view.x * lz + cy * lx,
+      this._anchor.y - this._view.y * lz + ly,
+      this._anchor.z - this._view.z * lz + (-sy) * lx
     );
 
-    // 穿墙回拉：锚点 → 目标位射线
+    // 穿墙回拉：锚点 → 目标位。
+    // 只查中心一条射线不够——相机近平面有体积，贴墙时四角会切进方块里
+    // （看到墙的背面）。这里对中心 + 四个角偏移各做一次射线，取最近命中。
     this._dir.copy(this._desired).sub(this._anchor);
     const dist = this._dir.length();
     if (dist > 1e-4) {
       this._dir.divideScalar(dist);
-      const hit = this.world.raycast(
-        this._anchor.x, this._anchor.y, this._anchor.z,
-        this._dir.x, this._dir.y, this._dir.z, dist
-      );
-      if (hit) {
-        const d = Math.max(0.15, hit.dist - CAMERA.pullbackPad);
+
+      // 构造与视线垂直的右/上向量，用来撒开采样点
+      this._probeRight.set(-this._dir.z, 0, this._dir.x);
+      if (this._probeRight.lengthSq() < 1e-6) this._probeRight.set(1, 0, 0);
+      else this._probeRight.normalize();
+      this._probeUp.crossVectors(this._probeRight, this._dir).normalize();
+
+      const pad = CAMERA.probeRadius;
+      let nearest = dist;
+      for (const [ox, oy] of CAMERA_PROBES) {
+        const sx = this._anchor.x + (this._probeRight.x * ox + this._probeUp.x * oy) * pad;
+        const sy = this._anchor.y + (this._probeRight.y * ox + this._probeUp.y * oy) * pad;
+        const sz = this._anchor.z + (this._probeRight.z * ox + this._probeUp.z * oy) * pad;
+        const hit = this.world.raycast(
+          sx, sy, sz, this._dir.x, this._dir.y, this._dir.z, dist
+        );
+        if (hit && hit.dist < nearest) nearest = hit.dist;
+      }
+
+      if (nearest < dist) {
+        const d = Math.max(0.2, nearest - CAMERA.pullbackPad);
         this._desired.copy(this._anchor).addScaledVector(this._dir, d);
       }
     }
@@ -96,31 +149,39 @@ export class OrbitFollowCamera {
 
     this.cam.position.copy(this._current);
 
-    // 注视点：锚点前方，保证准星与角色朝向一致
-    this._look.set(
-      this._anchor.x - sy * cp * 8,
-      this._anchor.y + sp * 8,
-      this._anchor.z - cy * cp * 8
-    );
+    // 注视点 = 相机位置沿视线方向前方一点。
+    // 关键：注视点必须相对「相机」而不是「锚点」计算，否则相机被墙回拉后
+    // 视线会歪掉，准星指向和实际弹道就对不上（开镜时尤其明显）。
+    this._look.copy(this._current).addScaledVector(this._view, 12);
     this.cam.lookAt(this._look);
 
     // 倾斜带来的相机滚转
     this._roll += (-this.leanAmt * 0.22 - this._roll) * Math.min(1, dt * 8);
     this.cam.rotateZ(this._roll);
 
-    // 震屏：位置 + 旋转噪声
-    if (this.shake > 0.001) {
-      const s = this.shake * this.shake;
-      this.cam.position.x += (Math.random() - 0.5) * 0.09 * s;
-      this.cam.position.y += (Math.random() - 0.5) * 0.09 * s;
-      this.cam.rotateZ((Math.random() - 0.5) * 0.04 * s);
-      this.shake = Math.max(0, this.shake - dt * 3.2);
-    }
+    this.applyShake(dt);
 
     if (Math.abs(this.cam.fov - fovTarget) > 0.05) {
       this.cam.fov += (fovTarget - this.cam.fov) * Math.min(1, dt * 9);
       this.cam.updateProjectionMatrix();
     }
+  }
+
+  /** 震屏：位置 + 旋转噪声，叠加在已算好的相机变换上 */
+  applyShake(dt) {
+    if (this.shake <= 0.001) return;
+    const s = this.shake * this.shake;
+    this.cam.position.x += (Math.random() - 0.5) * 0.09 * s;
+    this.cam.position.y += (Math.random() - 0.5) * 0.09 * s;
+    this.cam.rotateZ((Math.random() - 0.5) * 0.04 * s);
+    this.shake = Math.max(0, this.shake - dt * 3.2);
+  }
+
+  /** 切换第一/第三人称，返回切换后是否为第一人称 */
+  toggleView() {
+    this.firstPerson = !this.firstPerson;
+    this._initialised = false;      // 强制相机瞬移到新位置，不要插值穿墙
+    return this.firstPerson;
   }
 
   resize(w, h) {

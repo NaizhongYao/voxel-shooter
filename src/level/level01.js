@@ -1,23 +1,89 @@
 import { World, BLOCK } from '../voxel/world.js';
+import { furnishLevel01 } from './furniture.js';
 
 /**
- * 关卡 01「黑楼」——64×64、两层、外接庭院。
- * 层高 4 vox：一层地板 y=0，净空 y=1..3，二层楼板 y=4，净空 y=5..7，屋顶 y=8。
+ * 关卡 01「黑楼」——64×64 单层平房 + 外接庭院。
  *
- * 关卡几何遵循 GDD 10 章的六条硬规则：门口留白 2 格、掩体错位、
- * 每房间至少两个入口、走廊不超过 20 vox。
+ * 为什么砍掉二楼：楼板与墙体的接缝永远会漏出上层视野（玩家在一层抬头
+ * 就能看进二楼卧室），室内感直接崩掉。修补接缝的成本远高于收益 ——
+ * 单层布局把预算全花在「厚墙 + 密闭房间 + 长视线」上，战术玩法一点没少。
+ *
+ * ── 高度分配（层高 5 vox）──
+ *   y=0     地板
+ *   y=1..4  净空（4 格；站立 1.8 有充足头顶空间）
+ *   y=5     天花板（铺满整栋，室内任何位置抬头都是实心顶）
+ *
+ * ── 墙体规则 ──
+ *  · 所有墙（含内墙）一律 2 格厚。1 格薄墙两侧只有一层面，玩家贴墙时
+ *    相机近平面容易切进墙里看到背面 —— 也就是穿模。2 格厚给相机留了
+ *    一整格缓冲，穿模在几何上不可能发生。
+ *  · 墙从 y=1 一直砌到 y=4，与天花板严丝合缝，不留任何光缝。
+ *  · 门洞只有 2 格高（y=1..2），门板同样 2 格高，正好填满门框 ——
+ *    关上的门完全密封，不会从门楣缝里漏光漏视线漏子弹。
+ *
+ * ── 房间平面图（内部净空坐标）──
+ *
+ *      x  8······19 22······43 46······55
+ *   z= 8  ┌─卧室──┬─北走道──┬──书房──┐
+ *     14  ├───────┴─────────┴────────┤   ← z=15,16 隔墙
+ *     17  ├─西储──┬──仓库───┬──东储──┤
+ *     24  ├───────┴─────────┴────────┤   ← z=25,26 隔墙
+ *     27  ├────────主走廊─────────────┤
+ *     30  ├──────────────────────────┤   ← z=31,32 隔墙
+ *     33  ├──────南侧过道─────────────┤
+ *     35  ├──────────────────────────┤   ← z=36,37 隔墙
+ *     38  ├─客厅──┬──门厅───┬──厨房──┤
+ *     46  └───────┴─────────┴────────┘
+ *              ↑ x=20,21   ↑ x=44,45  （北区竖墙 z=8..24）
+ *              ↑ x=23,24   ↑ x=40,41  （南区竖墙 z=38..46）
  */
 
-export const FLOOR1_Y = 0;   // 一层地板顶面 = y1
-export const FLOOR2_Y = 4;   // 二层楼板顶面 = y5
-export const ROOF_Y   = 8;
+export const FLOOR_Y  = 0;            // 地板所在层（顶面 = y=1）
+export const CEIL_Y   = 5;            // 天花板所在层
+export const WALL_TOP = CEIL_Y - 1;   // 墙体最高格
+export const WALL_THICK = 2;          // 墙厚（vox）
+export const DOOR_H = 2;              // 门洞 / 门板高度（格）
 
 export const SPAWN = { x: 32.5, y: 1.0, z: 58.5 };   // 庭院
 
-/** 门位置清单，交给门系统实例化（这里只留 DOORFRAME 标记与空气缺口） */
+/** 门位置清单，交给门系统实例化 */
 export const DOORS = [];
 
-function wallRun(w, x0, z0, x1, z1, yFrom, yTo, id = BLOCK.WALL) {
+const Y0 = 1;                         // 墙体 / 门洞起始格
+
+/**
+ * 主入口双开门的格坐标。main.js 用它把这两扇门预先打开 ——
+ * 玩家出生在庭院正对这里，开局撞在关着的门上是很差的第一印象。
+ */
+export const MAIN_ENTRANCE = [[31, 47], [32, 47]];
+
+/**
+ * 建筑外墙：内表面 x=8..55、z=8..46。
+ * 外墙占 x=6,7 / x=56,57 / z=6,7 / z=47,48。
+ */
+export const BUILDING = { x0: 8, z0: 8, x1: 55, z1: 46 };
+
+/** 房间净空范围，敌人布置与测试都从这里取，避免坐标散落各处 */
+export const ROOMS = {
+  bedroom:   { x0: 8,  x1: 19, z0: 8,  z1: 14 },
+  northHall: { x0: 22, x1: 43, z0: 8,  z1: 14 },
+  study:     { x0: 46, x1: 55, z0: 8,  z1: 14 },
+  westStore: { x0: 8,  x1: 19, z0: 17, z1: 24 },
+  warehouse: { x0: 22, x1: 43, z0: 17, z1: 24 },
+  eastStore: { x0: 46, x1: 55, z0: 17, z1: 24 },
+  corridor:  { x0: 8,  x1: 55, z0: 27, z1: 30 },
+  southHall: { x0: 8,  x1: 55, z0: 33, z1: 35 },
+  living:    { x0: 8,  x1: 22, z0: 38, z1: 46 },
+  foyer:     { x0: 25, x1: 39, z0: 38, z1: 46 },
+  kitchen:   { x0: 42, x1: 55, z0: 38, z1: 46 },
+};
+
+// ───────────────────────────────────────────────────────────────────────────
+// 建造原语
+// ───────────────────────────────────────────────────────────────────────────
+
+/** 单格宽的一条墙 */
+function wallRun(w, x0, z0, x1, z1, yFrom, yTo, id) {
   const dx = Math.sign(x1 - x0), dz = Math.sign(z1 - z0);
   let x = x0, z = z0;
   const steps = Math.max(Math.abs(x1 - x0), Math.abs(z1 - z0));
@@ -27,224 +93,260 @@ function wallRun(w, x0, z0, x1, z1, yFrom, yTo, id = BLOCK.WALL) {
   }
 }
 
-/** 在墙上开门洞：清空 1 格宽 2 格高，底部标记 DOORFRAME */
-function carveDoor(w, x, z, y0, facing) {
-  for (let y = y0; y < y0 + 3; y++) w.set(x, y, z, BLOCK.AIR);
-  w.set(x, y0, z, BLOCK.DOORFRAME);
-  DOORS.push({ x, y: y0, z, facing });
+/**
+ * 沿 z 延伸的厚墙（占 x = x .. x+thick-1），从 y=1 砌到天花板下沿。
+ * 命名按「墙面法线的轴」：xWall 的法线在 x 上，所以它是南北向的墙。
+ */
+function xWall(w, x, z0, z1, id = BLOCK.WALL_IN, thick = WALL_THICK) {
+  for (let t = 0; t < thick; t++) wallRun(w, x + t, z0, x + t, z1, Y0, WALL_TOP, id);
 }
 
-/** 开一个无门的通道口（宽 wSpan 格） */
-function carveOpening(w, x, z, y0, along, span) {
-  for (let i = 0; i < span; i++) {
-    const px = along === 'x' ? x + i : x;
-    const pz = along === 'z' ? z + i : z;
-    for (let y = y0; y < y0 + 3; y++) w.set(px, y, pz, BLOCK.AIR);
-  }
+/** 沿 x 延伸的厚墙（占 z = z .. z+thick-1） */
+function zWall(w, z, x0, x1, id = BLOCK.WALL_IN, thick = WALL_THICK) {
+  for (let t = 0; t < thick; t++) wallRun(w, x0, z + t, x1, z + t, Y0, WALL_TOP, id);
 }
 
 /**
- * 半格阶梯楼梯：沿 axis 方向每格抬高 0.5 vox。
+ * 在厚墙上开门洞并登记一扇门。
  *
- * 每级台阶的顶面高度 = yBase + (i+1)*0.5，用 STAIR_LO(0.5) / STAIR_HI(1.0)
- * 交替表达格内的半格与满格，配合玩家 stepUp(0.6) 走上去平滑无卡顿。
- * 台阶正上方强制清空 3 格净空，避免被后铺的楼板封住。
+ * @param through 门洞贯穿方向 'x' | 'z'。门洞从 (x,z) 沿这个方向清空
+ *                thick 格，所以 (x,z) 永远是门洞靠「小坐标」的那一端。
  *
- * @returns {{topY:number, endAxis:number}} 楼梯顶面高度与终点格坐标
+ * 门板装在 (x,z) 这一格，开门时朝小坐标一侧旋转 90° 退出通道 ——
+ * 所以调用方必须保证 (x-1,z) 或 (x,z-1) 是房间净空。
+ * 这条约束由 test/logic.test.mjs 的「门可完全敞开」用例守着。
  */
-function buildStairs(w, x, z, yBase, len, axis, width = 2) {
-  let topY = yBase;
-  for (let i = 0; i < len; i++) {
-    const surface = yBase + (i + 1) * 0.5;   // 这一级的顶面绝对高度
-    const gy = Math.ceil(surface) - 1;       // 顶面所在格
-    const id = (surface - gy) <= 0.5 + 1e-6 ? BLOCK.STAIR_LO : BLOCK.STAIR_HI;
-    topY = surface;
+function carveDoor(w, x, z, through, thick = WALL_THICK) {
+  for (let t = 0; t < thick; t++) {
+    const px = through === 'x' ? x + t : x;
+    const pz = through === 'z' ? z + t : z;
+    for (let y = Y0; y < Y0 + DOOR_H; y++) w.set(px, y, pz, BLOCK.AIR);
+  }
+  w.set(x, Y0, z, BLOCK.DOORFRAME);
+  DOORS.push({ x, y: Y0, z, through, thick });
+}
 
-    for (let k = 0; k < width; k++) {
-      const px = axis === 'z' ? x + k : x + i;
-      const pz = axis === 'z' ? z + i : z + k;
-      // 台阶下方填实
-      for (let fy = yBase; fy < gy; fy++) w.set(px, fy, pz, BLOCK.FLOOR);
-      w.set(px, gy, pz, id);
-      // 台阶上方净空 3 格（含头顶余量）
-      for (let cy = gy + 1; cy <= gy + 3 && cy < w.sy; cy++) w.set(px, cy, pz, BLOCK.AIR);
+/**
+ * 无门通道口（拱门）：沿 along 轴 span 格宽，穿墙方向清空整个厚度。
+ * 拱门给 3 格高 —— 它是永久开口，高一点让主动线读起来更开阔。
+ */
+function carveOpening(w, x, z, along, span, through, thick = WALL_THICK) {
+  for (let i = 0; i < span; i++) {
+    for (let t = 0; t < thick; t++) {
+      const px = x + (along === 'x' ? i : 0) + (through === 'x' ? t : 0);
+      const pz = z + (along === 'z' ? i : 0) + (through === 'z' ? t : 0);
+      for (let y = Y0; y < Y0 + 3; y++) w.set(px, y, pz, BLOCK.AIR);
     }
   }
-  const endAxis = (axis === 'z' ? z : x) + len - 1;
-  return { topY, endAxis };
 }
 
-/** 在楼板上开一个楼梯井口，并保证上层净空 */
-function carveStairwell(w, x0, z0, x1, z1, slabY, clearance = 3) {
-  for (let y = slabY; y <= slabY + clearance && y < w.sy; y++) {
-    w.fill(x0, y, z0, x1, y, z1, BLOCK.AIR);
-  }
-}
+// ───────────────────────────────────────────────────────────────────────────
 
 export function buildLevel01() {
   const w = new World();
   DOORS.length = 0;
+  const B = BUILDING;
 
   // ---- 地面 ----------------------------------------------------------------
-  // 庭院草地（有天空 → 月光），建筑内部混凝土地板
+  // 庭院草地（见天 → 有月光），建筑内部混凝土
   w.fill(0, 0, 0, 63, 0, 63, BLOCK.GRASS);
+  w.fill(B.x0 - 2, 0, B.z0 - 2, B.x1 + 2, 0, B.z1 + 2, BLOCK.CONCRETE);
 
-  const B = { x0: 6, z0: 6, x1: 57, z1: 48 };   // 建筑外墙范围
-  w.fill(B.x0, 0, B.z0, B.x1, 0, B.z1, BLOCK.FLOOR);
-
-  // 庭院边界矮墙（挡住玩家跑出世界，同时不挡月光）
-  wallRun(w, 1, 1, 62, 1, 1, 2);
-  wallRun(w, 1, 62, 62, 62, 1, 2);
-  wallRun(w, 1, 1, 1, 62, 1, 2);
-  wallRun(w, 62, 1, 62, 62, 1, 2);
-
-  // ---- 一层外墙 ------------------------------------------------------------
-  const y1 = 1, y1Top = 3;
-  wallRun(w, B.x0, B.z0, B.x1, B.z0, y1, y1Top);
-  wallRun(w, B.x0, B.z1, B.x1, B.z1, y1, y1Top);
-  wallRun(w, B.x0, B.z0, B.x0, B.z1, y1, y1Top);
-  wallRun(w, B.x1, B.z0, B.x1, B.z1, y1, y1Top);
-
-  // 主入口（南墙，正对庭院出生点）+ 侧门（东墙）
-  carveDoor(w, 31, B.z1, y1, 'south');
-  carveDoor(w, 32, B.z1, y1, 'south');
-  carveDoor(w, B.x1, 20, y1, 'east');
-
-  // ---- 一层内部分区 --------------------------------------------------------
-  // 中央走廊（东西向，z=26..28），长度 <20 vox 的分段由横墙切断
-  const corrZ0 = 26, corrZ1 = 28;
-  wallRun(w, B.x0 + 1, corrZ0 - 1, B.x1 - 1, corrZ0 - 1, y1, y1Top);
-  wallRun(w, B.x0 + 1, corrZ1 + 1, B.x1 - 1, corrZ1 + 1, y1, y1Top);
-
-  // 门厅（南侧，正对主入口）
-  wallRun(w, 24, 36, 40, 36, y1, y1Top);
-  wallRun(w, 24, 36, 24, B.z1 - 1, y1, y1Top);
-  wallRun(w, 40, 36, 40, B.z1 - 1, y1, y1Top);
-  carveOpening(w, 30, 36, y1, 'x', 4);            // 门厅 → 走廊南侧
-  carveDoor(w, 24, 42, y1, 'west');               // 门厅 → 西翼
-  carveDoor(w, 40, 42, y1, 'east');               // 门厅 → 东翼
-
-  // 走廊南侧连通段
-  wallRun(w, 30, 29, 30, 35, y1, y1Top);
-  wallRun(w, 33, 29, 33, 35, y1, y1Top);
-  carveOpening(w, 31, 29, y1, 'x', 2);
-
-  // 西翼房间 A（办公室）
-  wallRun(w, 16, 36, 23, 36, y1, y1Top);
-  wallRun(w, 16, 36, 16, B.z1 - 1, y1, y1Top);
-  carveDoor(w, 20, 36, y1, 'north');              // 第二入口（GDD 规则 3）
-
-  // 东翼房间 B（储藏）
-  wallRun(w, 41, 36, 50, 36, y1, y1Top);
-  wallRun(w, 50, 36, 50, B.z1 - 1, y1, y1Top);
-  carveDoor(w, 46, 36, y1, 'north');
-
-  // 北侧仓库（大空间，长视线 + 掩体接近）
-  wallRun(w, 20, 16, 20, corrZ0 - 2, y1, y1Top);
-  wallRun(w, 44, 16, 44, corrZ0 - 2, y1, y1Top);
-  wallRun(w, 20, 16, 44, 16, y1, y1Top);
-  carveOpening(w, 30, corrZ0 - 2, y1, 'x', 4);
-  carveDoor(w, 20, 22, y1, 'west');
-  carveDoor(w, 44, 22, y1, 'east');
-
-  // 西北小房间 C
-  wallRun(w, B.x0 + 1, 18, 19, 18, y1, y1Top);
-  carveDoor(w, 12, 18, y1, 'south');
-  carveDoor(w, 19, 12, y1, 'east');
-
-  // 东北小房间 D
-  wallRun(w, 45, 18, B.x1 - 1, 18, y1, y1Top);
-  carveDoor(w, 52, 18, y1, 'south');
-
-  // ---- 二层楼板 ------------------------------------------------------------
-  // 不铺满：留出中庭天井（仓库上方开放），形成垂直视线与「上下层」盲区
-  w.fill(B.x0, FLOOR2_Y, B.z0, B.x1, FLOOR2_Y, B.z1, BLOCK.FLOOR);
-  // 挖出中庭天井（仓库上方 22..42 × 18..26）
-  w.fill(22, FLOOR2_Y, 18, 42, FLOOR2_Y, 26, BLOCK.AIR);
-  // 天井四周栏杆
-  for (let x = 21; x <= 43; x++) {
-    w.set(x, FLOOR2_Y + 1, 17, BLOCK.RAILING);
-    w.set(x, FLOOR2_Y + 1, 27, BLOCK.RAILING);
+  // ---- 庭院边界矮墙（挡住玩家跑出世界，但不挡月光）------------------------
+  for (let t = 0; t < 2; t++) {
+    wallRun(w, 1, 1 + t, 62, 1 + t, Y0, 2, BLOCK.WALL);
+    wallRun(w, 1, 62 - t, 62, 62 - t, Y0, 2, BLOCK.WALL);
+    wallRun(w, 1 + t, 1, 1 + t, 62, Y0, 2, BLOCK.WALL);
+    wallRun(w, 62 - t, 1, 62 - t, 62, Y0, 2, BLOCK.WALL);
   }
-  for (let z = 17; z <= 27; z++) {
-    w.set(21, FLOOR2_Y + 1, z, BLOCK.RAILING);
-    w.set(43, FLOOR2_Y + 1, z, BLOCK.RAILING);
-  }
-  w.fill(22, FLOOR2_Y + 1, 18, 42, FLOOR2_Y + 1, 26, BLOCK.AIR);
 
-  // ---- 二层墙体 ------------------------------------------------------------
-  const y2 = FLOOR2_Y + 1, y2Top = FLOOR2_Y + 3;
-  wallRun(w, B.x0, B.z0, B.x1, B.z0, y2, y2Top);
-  wallRun(w, B.x0, B.z1, B.x1, B.z1, y2, y2Top);
-  wallRun(w, B.x0, B.z0, B.x0, B.z1, y2, y2Top);
-  wallRun(w, B.x1, B.z0, B.x1, B.z1, y2, y2Top);
+  // ---- 建筑外墙（2 格厚，地面直达天花板）---------------------------------
+  const EX = BLOCK.WALL;
+  zWall(w, B.z0 - 2, B.x0 - 2, B.x1 + 2, EX);   // 北 z=6,7
+  zWall(w, B.z1 + 1, B.x0 - 2, B.x1 + 2, EX);   // 南 z=47,48
+  xWall(w, B.x0 - 2, B.z0 - 2, B.z1 + 2, EX);   // 西 x=6,7
+  xWall(w, B.x1 + 1, B.z0 - 2, B.z1 + 2, EX);   // 东 x=56,57
 
-  // 二层环形走道 + 两个房间
-  wallRun(w, 14, 34, 49, 34, y2, y2Top);
-  carveDoor(w, 24, 34, y2, 'north');
-  carveDoor(w, 40, 34, y2, 'north');
-  wallRun(w, 30, 35, 30, B.z1 - 1, y2, y2Top);
-  carveOpening(w, 30, 40, y2, 'z', 2);
+  // ---- 室内隔墙（全部 2 格厚）-------------------------------------------
+  zWall(w, 15, B.x0, B.x1);        // 北区分隔：卧室/走道/书房 ↔ 储藏/仓库
+  zWall(w, 25, B.x0, B.x1);        // 仓库带 ↔ 主走廊
+  zWall(w, 31, B.x0, B.x1);        // 主走廊 ↔ 南侧过道
+  zWall(w, 36, B.x0, B.x1);        // 南侧过道 ↔ 南三间
 
-  // 二层西房间（狙击位，可俯视天井）
-  wallRun(w, 14, 20, 14, 33, y2, y2Top);
-  carveDoor(w, 14, 30, y2, 'east');
+  xWall(w, 20, B.z0, 24);          // 北区西竖墙（卧室/西储 ↔ 中段）
+  xWall(w, 44, B.z0, 24);          // 北区东竖墙（中段 ↔ 书房/东储）
+  xWall(w, 23, 38, B.z1);          // 南区西竖墙（客厅 ↔ 门厅）
+  xWall(w, 40, 38, B.z1);          // 南区东竖墙（门厅 ↔ 厨房）
 
-  // 二层东房间
-  wallRun(w, 49, 20, 49, 33, y2, y2Top);
-  carveDoor(w, 49, 30, y2, 'west');
+  // ---- 门与通道口 --------------------------------------------------------
+  // 主入口：南外墙双开门，正对庭院出生点（开门后退进门厅，不挡通道）
+  for (const [mx, mz] of MAIN_ENTRANCE) carveDoor(w, mx, mz, 'z');
+  // 东侧门：从庭院东侧绕后进东储
+  carveDoor(w, B.x1 + 1, 20, 'x');
 
-  // ---- 屋顶 ----------------------------------------------------------------
-  w.fill(B.x0, ROOF_Y, B.z0, B.x1, ROOF_Y, B.z1, BLOCK.FLOOR);
+  // 门厅 → 南侧过道（4 格宽拱门，主动线）
+  carveOpening(w, 30, 36, 'x', 4, 'z');
+  // 门厅 ↔ 客厅 / 厨房
+  carveDoor(w, 23, 42, 'x');       // 开向客厅（x=22 净空）
+  carveDoor(w, 40, 42, 'x');       // 开向门厅（x=39 净空）
+  // 客厅 / 厨房 各自的第二入口，直通南侧过道
+  carveDoor(w, 14, 36, 'z');
+  carveDoor(w, 48, 36, 'z');
 
-  // ---- 楼梯（半格阶梯，从门厅东侧上二层）--------------------------------
-  // 抬升 4 vox 需要 8 级半格台阶：z=38..45，顶面正好等于二层楼板 y=5 的地面
-  // 先开井口（含顶部平台），再铺台阶，顺序反了会把最高几级削掉
-  carveStairwell(w, 42, 38, 43, 47, FLOOR2_Y);
-  const s1 = buildStairs(w, 42, 38, 1, 8, 'z', 2);
-  // 楼梯顶端落脚平台，接上二层地面
-  w.fill(42, FLOOR2_Y, 46, 43, FLOOR2_Y, 47, BLOCK.FLOOR);
+  // 南侧过道 → 主走廊：中央拱门 + 两侧翼门（三条推进路线）
+  carveOpening(w, 30, 31, 'x', 3, 'z');
+  carveDoor(w, 12, 31, 'z');
+  carveDoor(w, 50, 31, 'z');
 
-  // 第二座楼梯（西北，跨层巡逻用）
-  carveStairwell(w, 10, 22, 11, 31, FLOOR2_Y);
-  const s2 = buildStairs(w, 10, 22, 1, 8, 'z', 2);
-  w.fill(10, FLOOR2_Y, 30, 11, FLOOR2_Y, 31, BLOCK.FLOOR);
+  // 主走廊 → 仓库带
+  carveOpening(w, 30, 25, 'x', 4, 'z');
+  carveDoor(w, 12, 25, 'z');       // 开向西储
+  carveDoor(w, 50, 25, 'z');       // 开向东储
 
-  // ---- 掩体布置（错位摆放，门口留白 2 格）------------------------------
+  // 仓库 ↔ 两侧储藏间
+  carveDoor(w, 20, 21, 'x');       // 开向西储（x=19 净空）
+  carveDoor(w, 44, 21, 'x');       // 开向仓库（x=43 净空）
+
+  // 仓库 → 北走道
+  carveOpening(w, 31, 15, 'x', 3, 'z');
+  // 北走道 ↔ 卧室 / 书房
+  carveDoor(w, 20, 11, 'x');       // 开向卧室（x=19 净空）
+  carveDoor(w, 44, 11, 'x');       // 开向北走道（x=43 净空）
+  // 卧室 / 书房 的第二入口，直通两侧储藏间
+  carveDoor(w, 14, 15, 'z');
+  carveDoor(w, 50, 15, 'z');
+
+  // ---- 天花板（铺满整栋，含墙体上方）------------------------------------
+  w.fill(B.x0 - 2, CEIL_Y, B.z0 - 2, B.x1 + 2, CEIL_Y, B.z1 + 2, BLOCK.CEILING);
+
+  /**
+   * ---- 走廊断视线：错位墙垛 ---------------------------------------------
+   *
+   * 48 vox 的直走廊违反 GDD「走廊不超过 20 vox」。用错位墙垛切断长视线。
+   *
+   * ══ 墙垛必须封 3 格，不能只封 2 格 ══
+   *
+   * 走廊净空 4 格（z=27..30）。曾经一个墙垛封 z=27,28、另一个封 z=29,30，
+   * 直线视线确实被挡住了，但存在一条从 (55,27) 到 (8,30) 的**斜线**
+   * 恰好从两个墙垛的缺口穿过 —— 实测整条 47 vox 走廊仍然一眼看到底，
+   * 墙垛等于没起作用。
+   *
+   * 现在每个墙垛封 3 格、只留 1 格通道，且两者留的是**不同**的那 1 格。
+   * 任何一条从东端到西端的视线都必须同时穿过两个只有 1 格宽的缺口，
+   * 而它们在 z 上错开 —— 几何上不可能。代价是通道变窄，推进必须切角，
+   * 这正是想要的效果。
+   */
+  xWall(w, 24, 27, 29, BLOCK.WALL_IN);   // 留 z=30
+  xWall(w, 39, 28, 30, BLOCK.WALL_IN);   // 留 z=27
+  // 南侧过道（z=33..35，净空 3 格）：各封 2 格，留不同的那 1 格
+  xWall(w, 27, 33, 34, BLOCK.WALL_IN);   // 留 z=35
+  xWall(w, 45, 34, 35, BLOCK.WALL_IN);   // 留 z=33
+
+  // ---- 掩体（错位摆放，门口留白 2 格）-----------------------------------
   const crates = [
-    // 仓库：错位货架，形成可接近的长视线
-    [26, 20], [27, 20], [26, 21],
-    [36, 22], [37, 22],
-    [30, 24], [31, 24],
-    [24, 25], [40, 19],
-    // 门厅
-    [27, 40], [36, 41],
-    // 房间 A / B
-    [19, 43], [21, 45], [44, 43], [47, 45],
+    // 仓库：错位货箱，形成可接近的长视线
+    [25, 19], [26, 19], [25, 20],
+    [37, 21], [38, 21],
+    [30, 23], [31, 23],
+    [41, 18],
+    // 北走道
+    [27, 10], [28, 10], [38, 12],
+    // 主走廊
+    [18, 28], [33, 29], [46, 28],
+    // 南侧过道
+    [20, 34], [43, 34],
+    // 门厅 / 客厅 / 厨房
+    [27, 41], [37, 42], [10, 44], [52, 44],
+    // 储藏间
+    [12, 19], [17, 22], [48, 19], [53, 22],
   ];
   for (const [cx, cz] of crates) {
-    w.set(cx, 1, cz, BLOCK.CRATE);
+    if (w.get(cx, Y0, cz) === BLOCK.AIR) w.set(cx, Y0, cz, BLOCK.CRATE);
   }
 
   // 2 格高货架（齐胸掩体，透光形成条纹阴影）
   const shelves = [
-    [29, 18], [29, 19], [33, 18], [33, 19],
-    [38, 24], [38, 25], [23, 22], [23, 23],
+    [29, 17], [29, 18], [34, 17], [34, 18],
+    [39, 23], [39, 24], [23, 21], [23, 22],
+    [15, 29], [42, 29],
   ];
   for (const [sx, sz] of shelves) {
-    w.set(sx, 1, sz, BLOCK.SHELF);
-    w.set(sx, 2, sz, BLOCK.SHELF);
+    if (w.get(sx, Y0, sz) !== BLOCK.AIR) continue;
+    w.set(sx, Y0, sz, BLOCK.SHELF);
+    w.set(sx, Y0 + 1, sz, BLOCK.SHELF);
   }
 
-  // 二层掩体
-  for (const [cx, cz] of [[18, 30], [19, 24], [45, 30], [46, 24], [26, 40], [36, 42]]) {
-    w.set(cx, FLOOR2_Y + 1, cz, BLOCK.CRATE);
+  // 庭院掩体（教学区：进门前先学会用掩体）
+  for (const [cx, cz] of [[28, 54], [29, 54], [36, 56], [24, 58], [40, 52]]) {
+    w.set(cx, Y0, cz, BLOCK.CRATE);
   }
 
-  // 庭院掩体（教学区：一个高处蹲守位的视觉线索）
-  for (const [cx, cz] of [[28, 54], [29, 54], [36, 56], [24, 58]]) {
-    w.set(cx, 1, cz, BLOCK.CRATE);
-  }
+  // ---- 家具 --------------------------------------------------------------
+  furnishLevel01(w, Y0);
+
+  // 家具布置完之后统一清障：门洞、通道口与出生点必须净空。
+  clearDoorways(w);
+  clearSpawn(w);
 
   return w;
+}
+
+/**
+ * 门口 / 出生点清障时「可以拆掉」的方块白名单。
+ *
+ * ══ 为什么必须是白名单，不能用 ID 区间 ══
+ *
+ * 原来写的是 `id >= BLOCK.SOFA` —— 想表达「家具的 ID 都在 SOFA 之后」。
+ * 但 blocks.js 后来在家具之后又追加了建筑材质（CONCRETE 27 / CEILING 28 /
+ * WALL_IN 29 / ROOF 30），它们的 ID 也都 >= SOFA(12)，于是门口清障
+ * 把内墙一起拆了：北区两道竖墙在 z=9..13 被清空，卧室 / 走道 / 书房
+ * 变成一个巨大的通间，室内最长视线达到 47 vox（整栋楼对角）。
+ *
+ * ID 区间判断在「枚举还会继续增长」的地方是必错的。白名单不会随
+ * 新增方块而失效 —— 新方块默认不可拆，这是安全的默认值。
+ */
+const CLEARABLE = new Set([
+  // 掩体
+  BLOCK.CRATE, BLOCK.SHELF,
+  // 家具
+  BLOCK.SOFA, BLOCK.SOFA_BACK, BLOCK.TABLE, BLOCK.TV, BLOCK.BED,
+  BLOCK.CABINET, BLOCK.CARPET, BLOCK.LAMP, BLOCK.PLANT, BLOCK.COUNTER,
+  BLOCK.CHAIR, BLOCK.WARDROBE, BLOCK.PICTURE, BLOCK.SINK, BLOCK.BOOKSHELF,
+]);
+
+/**
+ * 门洞及其两侧各 2 格无阻挡（GDD 规则 1：留出切角空间）。
+ * 只清家具与掩体，绝不动墙体、地板与天花板。
+ */
+function clearDoorways(w) {
+  for (const d of DOORS) {
+    const spanX = 2 + (d.through === 'x' ? d.thick : 0);
+    const spanZ = 2 + (d.through === 'z' ? d.thick : 0);
+    for (let y = d.y; y < d.y + DOOR_H; y++) {
+      for (let dx = -2; dx <= spanX; dx++) {
+        for (let dz = -2; dz <= spanZ; dz++) {
+          const id = w.get(d.x + dx, y, d.z + dz);
+          if (CLEARABLE.has(id)) w.set(d.x + dx, y, d.z + dz, BLOCK.AIR);
+        }
+      }
+    }
+  }
+  // 门框标记本身要保住（clear 可能把它连带清掉）
+  for (const d of DOORS) {
+    if (w.get(d.x, d.y, d.z) === BLOCK.AIR) w.set(d.x, d.y, d.z, BLOCK.DOORFRAME);
+  }
+}
+
+/** 出生点周围 2 格净空，避免开局卡在家具里 */
+function clearSpawn(w) {
+  const sx = Math.floor(SPAWN.x), sz = Math.floor(SPAWN.z);
+  for (let y = Y0; y < Y0 + 3; y++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        const id = w.get(sx + dx, y, sz + dz);
+        // 同样用白名单：`id >= BLOCK.CRATE` 会把庭院矮墙也拆掉
+        if (CLEARABLE.has(id)) w.set(sx + dx, y, sz + dz, BLOCK.AIR);
+      }
+    }
+  }
 }

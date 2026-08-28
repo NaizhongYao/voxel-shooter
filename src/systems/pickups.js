@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { PALETTE } from '../config.js';
+import { PALETTE, PLAYER } from '../config.js';
+import { D } from '../difficulty.js';
 import { WEAPONS } from './weapons.js';
 
 /**
@@ -104,15 +105,30 @@ export class PickupManager {
       if (d > 1.2) continue;
 
       if (p.kind === KIND.MEDKIT) {
-        if (player.hp < 60) {
-          player.hp = Math.min(60, player.hp + 30);
+        // 上限与回复量都读难度/实例，不要硬编码 ——
+        // 写死会导致医疗包把满血玩家「治」回另一个难度的上限。
+        const heal = D().medkitHeal;
+        if (player.hp < player.hpMax) {
+          player.hp = Math.min(player.hpMax, player.hp + heal);
           p.take();
-          onPickup?.('医疗包 +30 HP');
+          onPickup?.(`医疗包 +${heal} HP`);
         }
       } else if (p.kind === KIND.AMMO) {
-        if (loadout.addAmmo(p.payload.amount ?? 30)) {
+        /**
+         * 弹药盒。addAmmo 返回 false 意味着「没有任何枪吃得下这些弹药」
+         * —— 目前只有一种情况：玩家还没捡到主武器，身上只有无限备弹的手枪。
+         *
+         * 这时不消耗拾取物是对的（留着等玩家有枪了再来拿），但必须给
+         * 反馈，否则玩家反复走过一个闪着青光的盒子、什么都没发生，
+         * 只会以为是 bug。第一次撞上时提示一次就够。
+         */
+        const amt = p.payload.amount ?? 30;
+        if (loadout.addAmmo(amt)) {
           p.take();
-          onPickup?.(`弹药 +${p.payload.amount ?? 30}`);
+          onPickup?.(`弹药 +${amt}`);
+        } else if (!p.warned) {
+          p.warned = true;
+          onPickup?.('弹药：需要先捡一把主武器');
         }
       } else if (p.kind === KIND.WEAPON) {
         nearWeapon = p;

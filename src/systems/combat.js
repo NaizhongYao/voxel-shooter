@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { PALETTE, LIGHT, PLAYER } from '../config.js';
+import { D } from '../difficulty.js';
 import { BLOCKS } from '../voxel/blocks.js';
 import { PERCEPTION, rayBox } from './enemy.js';
 
@@ -29,6 +30,7 @@ export class Combat {
     this.stats = { shots: 0, hits: 0, headshots: 0, kills: 0 };
     this.onPlayerHit = null;      // 回调：(damage, zone) => void
     this.onKill = null;           // 回调：(enemy) => void
+    this.onEnemyShot = null;      // 回调：(weaponSpec, distToPlayer) => void
   }
 
   /**
@@ -39,25 +41,33 @@ export class Combat {
     const aim = player.aimSolution(cam);
     // 枪口被自己的掩体挡住 → 禁止开火（GDD 05 章）
     if (aim.blocked) return false;
+
+    // 先取散布，再 consume。consume() 会累加后坐抬枪，
+    // 若顺序反了，每一发都会被自己的后坐打偏 ——
+    // DMR 的 0.4° 会立刻变成 4.6°，「一击必杀 + 极小散布」彻底失效。
+    const spread = weapon.currentSpread(player.spreadMultiplier);
     if (!weapon.consume(now)) return false;
 
     const spec = weapon.spec;
-    const origin = player.muzzle().pos.clone();
-    const spread = weapon.currentSpread(player.spreadMultiplier);
+    // 弹道起点由 aimSolution 决定：第三人称是枪口，第一人称是眼睛。
+    // 视觉上的枪口焰仍然画在枪口，所以两种视角看起来都对。
+    const origin = aim.origin ? aim.origin.clone() : player.muzzle().pos.clone();
 
     this.stats.shots++;
     let anyHit = false;
 
     for (let p = 0; p < spec.pellets; p++) {
       _dir.copy(aim.dir);
-      applySpread(_dir, spread);
+      applySpread(_dir, spread, spec.pelletConcentrate ?? 1);
       const r = this.castBullet(origin, _dir, spec, spec.pierce, false);
       if (r.hitEnemy) anyHit = true;
     }
 
-    // 表现
-    this.fx.muzzleFlash(origin, aim.dir, spec.muzzleScale);
-    this.flashPool.pop(origin.x, origin.y, origin.z, {
+    // 表现：枪口焰与瞬时光始终画在真实枪口，
+    // 即使第一人称的弹道起点是眼睛（否则光会闪在脸上）
+    const visualMuzzle = player.muzzle().pos;
+    this.fx.muzzleFlash(visualMuzzle, aim.dir, spec.muzzleScale);
+    this.flashPool.pop(visualMuzzle.x, visualMuzzle.y, visualMuzzle.z, {
       intensity: LIGHT.muzzle.intensity * (spec.muzzleScale / 0.4),
       distance: LIGHT.muzzle.distance,
     });
@@ -123,10 +133,13 @@ export class Combat {
         } else {
           hitEnemy = true;
           if (target.zone === 'head') this.stats.headshots++;
-          const killed = target.enemy.takeDamage(dmg, target.zone);
+          // 传入弹道方向：敌人会朝子弹飞去的方向倒下
+          const killed = target.enemy.takeDamage(dmg, target.zone, dir);
           if (killed) {
             this.stats.kills++;
-            this.fx.deathBurst(target.enemy.pos, PALETTE.threat);
+            // 死亡爆散的量减少：现在有倒地动画了，不需要炸成一团方块来
+            // 表达「他死了」。少量血雾 + 倒地比一堆碎块更好读。
+            this.fx.deathBurst(target.enemy.pos, PALETTE.threat, 8);
             this.markBlood(target.enemy.pos);
             if (this.onKill) this.onKill(target.enemy);
           }
@@ -155,20 +168,28 @@ export class Combat {
     return { hitEnemy };
   }
 
-  /** 敌人开火：带较大散布，保证会打空 */
+  /** 敌人开火：带瞄准误差，保证会打空（受控 DPS） */
   enemyShoot(enemy, player, now) {
     const spec = enemy.weapon.spec;
     const origin = new THREE.Vector3(enemy.pos.x, enemy.eyeY, enemy.pos.z);
-    // 瞄向玩家躯干
+    const torsoY = player.pos.y + player.body.height * 0.62;
     _dir.set(
-      player.pos.x - origin.x,
-      player.pos.y + player.body.height * 0.62 - origin.y,
-      player.pos.z - origin.z
-    ).normalize();
+      player.pos.x - origin.x, torsoY - origin.y, player.pos.z - origin.z
+    );
+    const dist = _dir.length() || 1;
+    _dir.divideScalar(dist);
+
+    // 瞄准误差按「固定的线性偏移」而不是固定角度。
+    // 纯角度散布在近距离等于零误差（4 vox 处锥半径只有 0.4 vox，比躯干还窄），
+    // 结果贴脸时敌人 30/30 全中、玩家必死。改成线性偏移后，
+    // 无论远近敌人都会打偏一部分，「多人交火才致命」的设计才成立。
+    // 瞄准误差按难度缩放（简单 ×1.6 打得偏 / 专家 ×0.6 打得准）
+    const missOffset = PERCEPTION.aimError * D().aimErrorMul;
+    const angleDeg = Math.atan2(missOffset, dist) * 180 / Math.PI;
 
     for (let p = 0; p < spec.pellets; p++) {
       const d = _dir.clone();
-      applySpread(d, PERCEPTION.aimSpread + spec.spread * 0.5);
+      applySpread(d, angleDeg + spec.spread * 0.3, spec.pelletConcentrate ?? 1);
       this.castBullet(origin, d, spec, 1, true, player);
     }
 
@@ -178,6 +199,8 @@ export class Combat {
       distance: LIGHT.muzzle.distance,
     });
     this.emitNoise(origin.x, origin.y, origin.z, spec.noise);
+    // 敌人的枪声按距离衰减 —— 远处的交火声是玩家的重要情报
+    if (this.onEnemyShot) this.onEnemyShot(spec, dist);
   }
 
   emitNoise(x, y, z, radius) {
@@ -202,8 +225,15 @@ export class Combat {
   }
 }
 
-/** 在圆锥内随机偏转方向 */
-function applySpread(dir, degrees) {
+/**
+ * 在圆锥内随机偏转方向。
+ *
+ * @param concentrate >1 时弹丸向锥心聚集。霰弹枪需要它：
+ *   18° 锥在 2 vox 处的半径已经是 0.65 vox，而躯干半宽只有 0.32，
+ *   均匀撒点意味着贴脸也只有一半弹丸命中，「贴脸一枪致死」在几何上
+ *   根本不可能发生。真实霰弹的弹丸分布本来也是中心密、边缘疏。
+ */
+function applySpread(dir, degrees, concentrate = 1) {
   if (degrees <= 0.001) return;
   const rad = degrees * Math.PI / 180;
   // 构造与 dir 垂直的两个基向量
@@ -212,7 +242,8 @@ function applySpread(dir, degrees) {
   const right = new THREE.Vector3().crossVectors(dir, up).normalize();
   const realUp = new THREE.Vector3().crossVectors(right, dir).normalize();
   const a = Math.random() * Math.PI * 2;
-  const r = Math.sqrt(Math.random()) * rad;
+  // concentrate=1 → sqrt 分布（圆内均匀）；更大的指数把点拉向中心
+  const r = Math.pow(Math.random(), concentrate / 2) * rad;
   dir.addScaledVector(right, Math.tan(r) * Math.cos(a));
   dir.addScaledVector(realUp, Math.tan(r) * Math.sin(a));
   dir.normalize();

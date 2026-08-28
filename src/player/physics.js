@@ -79,13 +79,20 @@ export class Body {
     this.moveVertical(world, this.vel.y * dt);
   }
 
+  /**
+   * 单轴推进 + 碰撞响应。
+   *
+   * 关键：受阻时不整轴回退，而是二分推进到「刚好贴住墙面」。
+   * 原来的整轴回退会让贴墙行走每帧都在「进入墙里 → 弹回原位」之间抖动，
+   * 手感就是那种一卡一卡的顿感。推进到接触面后，贴墙滑行是连续的。
+   */
   moveAxis(world, axis, delta) {
     if (delta === 0) return;
     const before = this.pos[axis];
     this.pos[axis] = before + delta;
     if (!this.blocked(world, this.pos.x, this.pos.y, this.pos.z)) return;
 
-    // 受阻：尝试自动登台
+    // 受阻：先尝试自动登台（半格阶梯 / 1 格台阶）
     if (this.onGround) {
       for (let lift = 0.1; lift <= PLAYER.stepUpMax + 1e-6; lift += 0.1) {
         if (!this.blocked(world, this.pos.x, this.pos.y + lift, this.pos.z)) {
@@ -94,7 +101,16 @@ export class Body {
         }
       }
     }
-    this.pos[axis] = before;
+
+    // 登不上去：二分找到最远的可行位置，贴住墙面而不是弹回
+    let lo = 0, hi = delta;
+    for (let i = 0; i < 8; i++) {
+      const mid = (lo + hi) / 2;
+      this.pos[axis] = before + mid;
+      if (this.blocked(world, this.pos.x, this.pos.y, this.pos.z)) hi = mid;
+      else lo = mid;
+    }
+    this.pos[axis] = before + lo;
     this.vel[axis] = 0;
   }
 

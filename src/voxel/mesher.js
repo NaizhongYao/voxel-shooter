@@ -13,13 +13,29 @@ import { BLOCK, BLOCKS, isOpaque, topOf } from './blocks.js';
  * 这样室内环境光可以压到 0.03 而庭院仍然能看清轮廓，且不需要第二个光源。
  */
 
+/**
+ * 六个面的顶点定义。索引顺序是 (0,1,2) + (2,1,3)，见下方 idxArr。
+ *
+ * ══ 绕序必须与 dir 一致，否则那一面会被 GPU 背面剔除 ══
+ *
+ * 这里曾经有一个很难看出来的 bug：±x 和 ±z 四个侧面的绕序全是反的
+ * （只有 ±y 是对的）。WebGL 默认剔除背面，判据是三角形在屏幕空间的绕向，
+ * 所以这四个面从外部看全部消失 —— 表现出来就是：
+ *   · 箱子只剩顶面和内壁（看进了盒子内部）
+ *   · 墙看起来是半透明的（侧面朝外那层没渲染，直接看进墙体）
+ * 而顶面/底面正常，所以现象很容易被误判成材质或光照问题。
+ *
+ * 校验方法（test/logic.test.mjs 里有对应用例）：
+ *   cross(v1-v0, v2-v0) 必须与 dir 同向，cross(v1-v2, v3-v2) 同理。
+ * 改动这张表之后务必跑那个测试。
+ */
 const FACES = [
-  { dir: [ 1, 0, 0], corners: [[1,0,1],[1,1,1],[1,0,0],[1,1,0]], shade: 0.72 },
-  { dir: [-1, 0, 0], corners: [[0,0,0],[0,1,0],[0,0,1],[0,1,1]], shade: 0.72 },
+  { dir: [ 1, 0, 0], corners: [[1,0,0],[1,1,0],[1,0,1],[1,1,1]], shade: 0.72 },
+  { dir: [-1, 0, 0], corners: [[0,0,1],[0,1,1],[0,0,0],[0,1,0]], shade: 0.72 },
   { dir: [ 0, 1, 0], corners: [[0,1,1],[1,1,1],[0,1,0],[1,1,0]], shade: 1.00 },
   { dir: [ 0,-1, 0], corners: [[0,0,0],[1,0,0],[0,0,1],[1,0,1]], shade: 0.42 },
-  { dir: [ 0, 0, 1], corners: [[0,0,1],[0,1,1],[1,0,1],[1,1,1]], shade: 0.86 },
-  { dir: [ 0, 0,-1], corners: [[1,0,0],[1,1,0],[0,0,0],[0,1,0]], shade: 0.86 },
+  { dir: [ 0, 0, 1], corners: [[1,0,1],[1,1,1],[0,0,1],[0,1,1]], shade: 0.86 },
+  { dir: [ 0, 0,-1], corners: [[0,0,0],[0,1,0],[1,0,0],[1,1,0]], shade: 0.86 },
 ];
 
 // 每个方块一份稳定的明度抖动，避免每帧变化产生闪烁
@@ -31,7 +47,11 @@ function hashJitter(x, y, z) {
 }
 
 const _c = new THREE.Color();
+const _e = new THREE.Color();
 const _moon = new THREE.Color(LIGHT.moonColor);
+
+/** 导出给测试用：校验绕序与法线一致（见 test/logic.test.mjs 第 11 节） */
+export const FACES_FOR_TEST = FACES;
 
 /**
  * 方块材质：Lambert + 一个额外的「烘焙光」顶点属性。
@@ -87,12 +107,10 @@ export class VoxelMesher {
     const { CHUNK } = WORLD;
     const nx = Math.ceil(this.world.sx / CHUNK);
     const nz = Math.ceil(this.world.sz / CHUNK);
-    this.stats.faces = 0;
     for (let cz = 0; cz < nz; cz++) {
       for (let cx = 0; cx < nx; cx++) this.buildChunk(cx, cz);
     }
-    this.stats.chunks = this.chunks.size;
-    this.stats.draws = this.chunks.size;
+    this.refreshStats();
     this.world.dirtyChunks.clear();
     return this.stats;
   }
@@ -104,6 +122,26 @@ export class VoxelMesher {
       this.buildChunk(cx, cz);
     }
     this.world.dirtyChunks.clear();
+    this.refreshStats();
+  }
+
+  /**
+   * 从当前几何体重新统计面数。
+   *
+   * 原来 buildChunk 里是 `this.stats.faces++` 累加，而 rebuildDirty 不清零 ——
+   * 开一次门就把那个区块的面数又加了一遍，HUD 上的「可见面」会一路涨上去。
+   * 直接数几何体里的三角形是唯一不会说谎的做法。
+   */
+  refreshStats() {
+    let faces = 0;
+    for (const mesh of this.chunks.values()) {
+      const idx = mesh.geometry.getIndex();
+      if (idx) faces += idx.count / 6;      // 每个面 2 个三角形 = 6 个索引
+    }
+    this.stats.faces = faces;
+    this.stats.chunks = this.chunks.size;
+    this.stats.draws = this.chunks.size;
+    return this.stats;
   }
 
   buildChunk(cx, cz) {
@@ -160,6 +198,15 @@ export class VoxelMesher {
               bb = _moon.b * k * (0.35 + _c.b);
             }
 
+            // 自发光方块（台灯）：把基色直接加进 baked 通道，
+            // 这样它在全黑房间里也能被看到，但不需要真的新增光源。
+            if (spec.emissive > 0) {
+              _e.setHex(spec.color);
+              br += _e.r * spec.emissive;
+              bg += _e.g * spec.emissive;
+              bb += _e.b * spec.emissive;
+            }
+
             for (const c of face.corners) {
               const px = x + (c[0] === 0 ? INSET : 1 - INSET);
               const pz = z + (c[2] === 0 ? INSET : 1 - INSET);
@@ -171,7 +218,6 @@ export class VoxelMesher {
             }
             idxArr.push(vCount, vCount + 1, vCount + 2, vCount + 2, vCount + 1, vCount + 3);
             vCount += 4;
-            this.stats.faces++;
           }
         }
       }

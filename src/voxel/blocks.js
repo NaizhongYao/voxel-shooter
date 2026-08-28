@@ -15,18 +15,46 @@ export const BLOCK = {
   FLOOR:      2,
   CRATE:      3,
   SHELF:      4,
-  RAILING:    5,
+  // 5 号位曾是 RAILING（二层天井栏杆）。二楼砍掉后没有任何栏杆，
+  // 但 ID 是存在 Uint8Array 里的，重新编号会让所有硬编码坐标失效，
+  // 所以留一个不渲染的占位，等下次真的需要 5 号方块时再用。
+  RESERVED_5: 5,
   STAIR_LO:   6,   // 半格阶梯（0.5 高）
   STAIR_HI:   7,   // 一格阶梯（1.0 高），与 STAIR_LO 交替堆出平缓楼梯
   DOORFRAME:  8,   // 逻辑标记，无几何
   DECAL:      9,   // 血迹贴花，贴地薄片
   GRASS:     10,   // 庭院地面（有月光）
-  CATWALK:   11,   // 二层走道（薄楼板）
+  RESERVED_11: 11, // 曾是 CATWALK（二层薄走道），同上
+
+  // ── 家具（让黑楼像个住过人的地方）──
+  // 全部仍是方块，只是高度/颜色/透光性不同，所以掩体分级依然一眼可读。
+  SOFA:      12,   // 沙发座（矮掩体，可跳上）
+  SOFA_BACK: 13,   // 沙发靠背（齐胸，挡视线）
+  TABLE:     14,   // 桌面（腿高，可蹲身躲）
+  TV:        15,   // 电视（深色屏幕）
+  BED:       16,   // 床垫
+  CABINET:   17,   // 柜子 / 冰箱（满高，挡光）
+  CARPET:    18,   // 地毯（贴地薄片，纯装饰）
+  LAMP:      19,   // 台灯（自发光，唯一的室内光点）
+  PLANT:     20,   // 盆栽（透光，不挡视线）
+  COUNTER:   21,   // 厨房台面 / 吧台
+  CHAIR:     22,   // 椅子
+  WARDROBE:  23,   // 衣柜（满高）
+  PICTURE:   24,   // 墙上挂画（贴墙薄片）
+  SINK:      25,   // 洗手台 / 马桶
+  BOOKSHELF: 26,   // 书架（透光，缝隙漏光）
+
+  // ── 建筑材质分层 ──
+  // 地板/墙/天花板用不同明度，室内空间的上下界才读得出来。
+  CONCRETE:  27,   // 水泥地板（一层地面）
+  CEILING:   28,   // 天花板（= 二层楼板的下表面）
+  WALL_IN:   29,   // 室内墙面（比外墙略亮，区分内外）
+  ROOF:      30,   // 屋顶
 };
 
 const def = (o) => ({
   solid: true, opaque: true, height: 1, climbable: false,
-  render: true, color: PALETTE.wall, jitter: true, ...o,
+  render: true, color: PALETTE.wall, jitter: true, emissive: 0, ...o,
 });
 
 export const BLOCKS = [];
@@ -35,13 +63,43 @@ BLOCKS[BLOCK.WALL]      = def({ color: PALETTE.wall,  name: 'wall' });
 BLOCKS[BLOCK.FLOOR]     = def({ color: PALETTE.floor, name: 'floor', climbable: true });
 BLOCKS[BLOCK.CRATE]     = def({ color: PALETTE.cover, name: 'crate', climbable: true });
 BLOCKS[BLOCK.SHELF]     = def({ color: PALETTE.cover, name: 'shelf', opaque: false });
-BLOCKS[BLOCK.RAILING]   = def({ color: PALETTE.cover, name: 'railing', opaque: false, height: 0.9 });
+BLOCKS[BLOCK.RESERVED_5] = def({ solid: false, opaque: false, render: false, height: 0, name: 'reserved_5' });
 BLOCKS[BLOCK.STAIR_LO]  = def({ color: PALETTE.floor, name: 'stair_lo', height: 0.5, climbable: true });
 BLOCKS[BLOCK.STAIR_HI]  = def({ color: PALETTE.floor, name: 'stair_hi', height: 1.0, climbable: true });
 BLOCKS[BLOCK.DOORFRAME] = def({ solid: false, opaque: false, render: false, height: 0 });
 BLOCKS[BLOCK.DECAL]     = def({ solid: false, opaque: false, height: 0.02, color: PALETTE.bloodDark, jitter: false });
 BLOCKS[BLOCK.GRASS]     = def({ color: 0x232b36, name: 'grass', climbable: true });
-BLOCKS[BLOCK.CATWALK]   = def({ color: PALETTE.floor, name: 'catwalk', height: 0.25, climbable: true });
+BLOCKS[BLOCK.RESERVED_11] = def({ solid: false, opaque: false, render: false, height: 0, name: 'reserved_11' });
+
+// ── 家具 ──────────────────────────────────────────────────────────────────
+// 高度决定掩体等级（GDD 02 章「掩体天然分级」）：
+//   ≤0.6 → 蹲下可完全遮蔽   1.0 → 遮蔽蹲伏玩家   ≥1.5 → 遮蔽站立躯干
+const FURN = PALETTE.furniture;
+BLOCKS[BLOCK.SOFA]      = def({ color: FURN.sofa,   name: 'sofa',   height: 0.55, climbable: true, opaque: false });
+BLOCKS[BLOCK.SOFA_BACK] = def({ color: FURN.sofa,   name: 'sofa_back', height: 1.0, climbable: true });
+BLOCKS[BLOCK.TABLE]     = def({ color: FURN.wood,   name: 'table',  height: 0.75, climbable: true, opaque: false });
+BLOCKS[BLOCK.TV]        = def({ color: FURN.screen, name: 'tv',     height: 0.7,  opaque: false });
+BLOCKS[BLOCK.BED]       = def({ color: FURN.fabric, name: 'bed',    height: 0.5,  climbable: true, opaque: false });
+BLOCKS[BLOCK.CABINET]   = def({ color: FURN.wood,   name: 'cabinet', height: 1.0, climbable: true });
+BLOCKS[BLOCK.CARPET]    = def({ color: FURN.carpet, name: 'carpet', height: 0.03, solid: false, opaque: false });
+BLOCKS[BLOCK.PLANT]     = def({ color: FURN.plant,  name: 'plant',  height: 0.8,  opaque: false });
+BLOCKS[BLOCK.COUNTER]   = def({ color: FURN.stone,  name: 'counter', height: 0.9, climbable: true });
+BLOCKS[BLOCK.CHAIR]     = def({ color: FURN.wood,   name: 'chair',  height: 0.5,  climbable: true, opaque: false });
+BLOCKS[BLOCK.WARDROBE]  = def({ color: FURN.woodDark, name: 'wardrobe', height: 1.0 });
+BLOCKS[BLOCK.PICTURE]   = def({ color: FURN.frame,  name: 'picture', height: 1.0, solid: false, opaque: false, jitter: false });
+BLOCKS[BLOCK.SINK]      = def({ color: FURN.porcelain, name: 'sink', height: 0.8, climbable: true, opaque: false });
+BLOCKS[BLOCK.BOOKSHELF] = def({ color: FURN.woodDark, name: 'bookshelf', height: 1.0, opaque: false });
+// 台灯：唯一的室内自发光方块。它给黑屋提供零星的「有人住过」的暖光锚点，
+// 同时不破坏「只有手电带阴影」的性能预算（发光靠顶点色，不是真光源）。
+BLOCKS[BLOCK.LAMP]      = def({ color: FURN.lamp,   name: 'lamp',   height: 0.6, opaque: false, emissive: 0.55 });
+
+// ── 建筑材质 ──────────────────────────────────────────────────────────────
+// 明度刻意分三档：地板最亮（手电扫过去有反馈）、墙中等、天花板最暗
+// （抬头是压迫感的来源）。这三档让室内空间的上下界一眼可读。
+BLOCKS[BLOCK.CONCRETE]  = def({ color: PALETTE.concrete, name: 'concrete', climbable: true });
+BLOCKS[BLOCK.CEILING]   = def({ color: PALETTE.ceiling,  name: 'ceiling',  climbable: true });
+BLOCKS[BLOCK.WALL_IN]   = def({ color: PALETTE.wallIn,   name: 'wall_in' });
+BLOCKS[BLOCK.ROOF]      = def({ color: PALETTE.roof,     name: 'roof' });
 
 export const isSolid  = (id) => BLOCKS[id].solid;
 export const isOpaque = (id) => BLOCKS[id].opaque;

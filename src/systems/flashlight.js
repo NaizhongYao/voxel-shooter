@@ -34,7 +34,9 @@ export class Flashlight {
     this.light.target = this.target;
 
     // 关灯时的贴身微光（保证「贴脸公平保护」，GDD 09 章规则 4）
-    this.nearGlow = new THREE.PointLight(0x8fa4c0, 0.5, F.nearGlow, 1.6);
+    this.nearGlow = new THREE.PointLight(
+      0x8fa4c0, F.nearGlowIntensity ?? 8, F.nearGlow, 1.4
+    );
     scene.add(this.nearGlow);
 
     this.spotPoint = new THREE.Vector3();   // 光斑世界坐标
@@ -114,8 +116,128 @@ export class Flashlight {
 }
 
 /**
+ * 敌人手电池 —— 玩家在黑暗里唯一的「有人在那边」预警信号。
+ *
+ * ══ 为什么是「池」而不是每个敌人一个灯 ══
+ *
+ * 12 个 SpotLight 会让 three.js 为每个受影响的材质重编译 shader，
+ * 而且每个带阴影的锥光都要额外一遍深度渲染 —— 12 个直接把帧率打死。
+ * 这里预创建 maxLit 个光源，每帧按距离分配给最近的几个活敌人：
+ * 远处的敌人玩家本来也看不清光斑，省下的预算全给近处。
+ *
+ * ══ 每个光源都必须投阴影（这是硬约束，不是优化项）══
+ *
+ * 曾经为了省性能只让最近的 1 个投阴影，结果剩下 3 个光源直接照穿墙壁：
+ * 隔着两道墙都能看到敌人脚下的一片亮光。SpotLight 不投阴影时对几何体
+ * 毫无感知，墙对它就是不存在。所以 maxLit 只能压到「全部都投得起阴影」
+ * 的数量（现在是 2），而不是「点亮很多但大部分穿墙」。
+ *
+ * ══ 为什么没有可见光柱 ══
+ *
+ * 试过用半透明锥体网格表示空气散射，但那是个普通 Mesh：它不参与遮挡，
+ * 于是整根光柱直接插穿墙体，在墙外看是一大片诡异的半透明灰色多边形。
+ * 真正的体积光需要屏幕空间光线步进（要读深度缓冲、按 shadow map 采样），
+ * 那是一整套后处理管线，远超这个项目的预算。
+ * 现在靠「光斑 + 敌人身上的灯头方块」传达同样的信息，成本是零。
+ */
+export class EnemyFlashlights {
+  constructor(scene) {
+    const E = LIGHT.enemyFlashlight;
+    this.cfg = E;
+    this.slots = [];
+
+    const halfAngle = E.angleDeg * Math.PI / 180;
+
+    for (let i = 0; i < E.maxLit; i++) {
+      const light = new THREE.SpotLight(
+        E.color, E.intensity, E.distance,
+        halfAngle, E.penumbra, E.decay
+      );
+      light.visible = false;
+
+      // 无条件投阴影：不投阴影的光源会穿墙，那比少一个光源难看得多
+      light.castShadow = true;
+      light.shadow.mapSize.set(E.shadowMapSize, E.shadowMapSize);
+      light.shadow.camera.near = 0.3;
+      light.shadow.camera.far = E.distance;
+      light.shadow.bias = -0.0015;
+      light.shadow.normalBias = 0.04;
+
+      const target = new THREE.Object3D();
+      light.target = target;
+      scene.add(light);
+      scene.add(target);
+
+      this.slots.push({ light, target });
+    }
+
+    this._pos = new THREE.Vector3();
+    this._dir = new THREE.Vector3();
+  }
+
+  /**
+   * 每帧把光源分配给离玩家最近的活敌人。
+   *
+   * @param enemies 全部敌人
+   * @param viewPos 玩家（或相机）位置，用来排优先级
+   * @param now     秒，用于待机扫视
+   */
+  update(enemies, viewPos, now) {
+    // 按到玩家的距离挑出最近的 maxLit 个开着灯的活敌人
+    const live = [];
+    for (const e of enemies) {
+      if (e.dead || !e.flashlightOn) continue;
+      const dx = e.pos.x - viewPos.x, dz = e.pos.z - viewPos.z;
+      live.push({ e, d: dx * dx + dz * dz });
+    }
+    live.sort((a, b) => a.d - b.d);
+
+    for (let i = 0; i < this.slots.length; i++) {
+      const slot = this.slots[i];
+      const entry = live[i];
+      if (!entry) { slot.light.visible = false; continue; }
+
+      const e = entry.e;
+      // 灯朝敌人正面；待机时缓慢扫视（光斑扫过是玩家的预警信号）
+      const sweep = e.state === 'idle'
+        ? Math.sin(now * this.cfg.sweepSpeed + e.id) * (this.cfg.sweepDeg * Math.PI / 180)
+        : 0;
+      const yaw = e.yaw + sweep;
+
+      // 灯头位置与 rig 上那块自发光方块对齐（光要看起来是从灯里出来的）
+      this._pos.set(
+        e.pos.x - Math.sin(yaw) * 0.3,
+        e.pos.y + e.height * 0.78,
+        e.pos.z - Math.cos(yaw) * 0.3
+      );
+      // 略微低头照地面，光斑才会扫过地板而不是平射进虚空
+      this._dir.set(-Math.sin(yaw), -0.14, -Math.cos(yaw)).normalize();
+
+      slot.light.position.copy(this._pos);
+      slot.target.position.copy(this._pos).addScaledVector(this._dir, 8);
+      slot.light.visible = true;
+    }
+  }
+}
+
+/**
  * 瞬时光源池（枪口焰 / 爆炸）。
  * 预创建固定数量的 PointLight 并复用，避免运行时新增光源导致 shader 重编译。
+ *
+ * ══ 为什么这些光不投阴影，却也不穿墙 ══
+ *
+ * PointLight 投阴影需要一张立方体阴影贴图（6 次深度渲染）。为一个只存在
+ * 80ms 的枪口焰付这个代价完全不值，但不投阴影的光会照穿墙壁 ——
+ * 敌人在隔壁房间开枪，玩家这边的墙面会跟着闪。手雷爆炸的 900 坎德拉
+ * 更明显，隔两道墙都能看到一片亮光。
+ *
+ * 解法不是加阴影，而是「玩家看不见的闪光根本不用点亮」：
+ * 每次 pop 之前做一条视线射线，被墙挡住就直接跳过这个光源。
+ * 代价是一次 DDA 射线（比一次阴影渲染便宜三个数量级），
+ * 而且结果在观感上和真阴影一致 —— 玩家永远不会看到穿墙的闪光。
+ *
+ * 视线检查由 main.js 通过 setVisibilityProbe 注入，因为光源池本身
+ * 不应该知道「玩家」这个概念。
  */
 export class FlashPool {
   constructor(scene, size = LIGHT.muzzle.poolSize) {
@@ -128,7 +250,12 @@ export class FlashPool {
       this.items.push({ light: l, until: 0, peak: 0, life: 1 });
     }
     this.cursor = 0;
+    /** (x,y,z) => boolean：该点是否对玩家可见。未注入时一律点亮。 */
+    this.visibilityProbe = null;
   }
+
+  /** 注入视线检查，避免玩家看不见的闪光照穿墙壁 */
+  setVisibilityProbe(fn) { this.visibilityProbe = fn; }
 
   pop(x, y, z, {
     intensity = LIGHT.muzzle.intensity,
@@ -136,6 +263,9 @@ export class FlashPool {
     distance = LIGHT.muzzle.distance,
     color = 0xffffff,
   } = {}) {
+    // 玩家看不见这个位置 → 不点灯（否则光会穿墙照亮玩家这侧的墙面）
+    if (this.visibilityProbe && !this.visibilityProbe(x, y, z)) return;
+
     const it = this.items[this.cursor];
     this.cursor = (this.cursor + 1) % this.items.length;
     it.light.position.set(x, y, z);

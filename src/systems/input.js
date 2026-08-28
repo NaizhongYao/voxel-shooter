@@ -15,8 +15,11 @@ export class Input {
     this.locked = false;
     this.wheel = 0;
 
+    this.keyEventCount = 0;      // 诊断用：确认键盘事件是否真的到达
+
     window.addEventListener('keydown', (e) => {
       if (e.repeat) return;
+      this.keyEventCount++;
       this.keys.add(e.code);
       this.pressed.add(e.code);
       if (['Space', 'Tab'].includes(e.code) && this.locked) e.preventDefault();

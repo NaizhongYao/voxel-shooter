@@ -213,6 +213,70 @@ export class Effects {
     it.color.setHex(PALETTE.brass);
   }
 
+  /**
+   * 手雷爆炸：一团向外飞散的橙白色方块 + 中心一瞬的大亮块。
+   *
+   * 分三层，因为单一颜色的爆炸读不出「热度」：
+   *   核心 —— 白热，寿命最短（一瞬即灭）
+   *   火焰 —— 橙黄，中等寿命，受轻微重力
+   *   烟灰 —— 深灰，寿命最长，向上飘
+   */
+  explosion(pos, amount = 34) {
+    // 核心闪块：几个大白块，60ms 内消失
+    for (let i = 0; i < 5; i++) {
+      const it = this.flashes.spawn({
+        maxLife: 0.06 + Math.random() * 0.05, baseScale: 0.9,
+        gravity: 0, drag: 1, shrink: true,
+        spin: new THREE.Vector3(
+          (Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10, 0
+        ),
+      });
+      it.pos.set(
+        pos.x + (Math.random() - 0.5) * 0.6,
+        pos.y + (Math.random() - 0.5) * 0.6,
+        pos.z + (Math.random() - 0.5) * 0.6
+      );
+      it.vel.set(0, 0, 0);
+      it.scale.set(1, 1, 1);
+      it.rot.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+      it.color.setHex(0xfff4d0);
+    }
+
+    // 火焰与烟灰
+    for (let i = 0; i < amount; i++) {
+      const smoke = i > amount * 0.6;
+      const speed = 4 + Math.random() * 9;
+      const th = Math.random() * Math.PI * 2;
+      const ph = Math.acos(2 * Math.random() - 1);
+      const it = this.debris.spawn({
+        maxLife: smoke ? 0.8 + Math.random() * 0.7 : 0.3 + Math.random() * 0.35,
+        baseScale: smoke ? 0.16 : 0.11,
+        gravity: smoke ? 2.5 : -9,          // 烟往上飘，火星往下落
+        drag: 0.9, shrink: true,
+        spin: new THREE.Vector3(
+          (Math.random() - 0.5) * 22, (Math.random() - 0.5) * 22, 0
+        ),
+      });
+      it.pos.set(
+        pos.x + (Math.random() - 0.5) * 0.35,
+        pos.y + (Math.random() - 0.5) * 0.35,
+        pos.z + (Math.random() - 0.5) * 0.35
+      );
+      it.vel.set(
+        Math.sin(ph) * Math.cos(th) * speed,
+        Math.cos(ph) * speed * 0.8 + 2,
+        Math.sin(ph) * Math.sin(th) * speed
+      );
+      it.scale.set(1, 1, 1);
+      if (smoke) {
+        it.color.setHex(0x3a3a3a).multiplyScalar(0.6 + Math.random() * 0.7);
+      } else {
+        it.color.setHex(Math.random() < 0.5 ? 0xffa63a : 0xffd98a)
+          .multiplyScalar(0.7 + Math.random() * 0.5);
+      }
+    }
+  }
+
   /** 死亡爆散：敌人死亡时整个人形炸成方块 */
   deathBurst(pos, colorHex = PALETTE.threat, amount = 16) {
     for (let i = 0; i < amount; i++) {
