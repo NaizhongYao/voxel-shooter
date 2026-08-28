@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { RIG, PALETTE, PLAYER } from '../config.js';
+import { buildGunModel, muzzleLocalZ } from '../systems/gunmesh.js';
 
 /**
  * 方块人形（6 部件 + 枪）。零骨骼、零外部模型：
@@ -24,7 +25,7 @@ function part(size, color, name) {
 }
 
 export class BlockyRig {
-  constructor(color = PALETTE.amber, { isPlayer = true } = {}) {
+  constructor(color = PALETTE.amber, { isPlayer = true, armored = false, kit = null } = {}) {
     this.root = new THREE.Group();
     this.root.name = isPlayer ? 'player-rig' : 'actor-rig';
 
@@ -38,6 +39,28 @@ export class BlockyRig {
     this.torso.position.y = 1.05;
     this.body.add(this.torso);
 
+    /**
+     * 武装敌人的护甲壳：一个比躯干略大的深灰方块，挂在 body 下、
+     * 与 torso 同级（不是 torso 的子物体）。这样它自动继承 body 的
+     * 蹲伏缩放（this.body.scale）、倾斜旋转（this.body.rotation.z）
+     * 与倒地姿态（updateDeath 里对 body 的旋转/位移）——不需要在那几处
+     * 各写一行「同步护甲」的代码，挂对了层级，物理上就是「粘在身上」。
+     * 唯一需要手动同步的是 torso 自己的前倾摆动（见 update() 里那一行），
+     * 因为那是 torso 的局部旋转，不会经过 body 传递下去。
+     */
+    this.armorShell = null;
+    this.kitParts = [];
+    this.fpHide = [];
+    const resolvedKit = kit ?? (armored ? 'armored' : (isPlayer ? 'player' : 'enemy'));
+    if (armored || resolvedKit === 'armored') {
+      const shellSize = { x: R.torso.x * 1.24, y: R.torso.y * 1.16, z: R.torso.z * 1.5 };
+      this.armorShell = part(shellSize, PALETTE.armor, 'armorShell');
+      this.armorShell.position.y = 1.05;
+      this.armorShell.castShadow = true;
+      this.body.add(this.armorShell);
+      this.fpHide.push(this.armorShell);
+    }
+
     this.headPivot = new THREE.Group();
     this.headPivot.position.y = 1.48;
     this.body.add(this.headPivot);
@@ -50,18 +73,15 @@ export class BlockyRig {
     this.legL = this.makeLimb(R.leg, color, 'legL', -0.16, 0.75);
     this.legR = this.makeLimb(R.leg, color, 'legR',  0.16, 0.75);
 
-    // 枪挂在右臂前方，后坐时沿 Z 回弹
+    // 枪挂在右臂前方，后坐时沿 Z 回弹。默认手枪外形，之后 setGun() 换成当前武器。
     this.gunPivot = new THREE.Group();
     this.gunPivot.position.set(0.34, 1.3, 0);
     this.body.add(this.gunPivot);
-    this.gun = part(R.gun, 0x11151c, 'gun');
-    this.gun.position.z = -R.gun.z / 2 - 0.1;
+    this.gunId = 'pistol';
+    this.gun = buildGunModel('pistol');
+    this.gun.position.z = 0;
     this.gunPivot.add(this.gun);
-
-    // 枪口锚点：枪灯与枪口焰的挂载位置
-    this.muzzle = new THREE.Object3D();
-    this.muzzle.position.set(0, 0, -R.gun.z - 0.12);
-    this.gunPivot.add(this.muzzle);
+    this.muzzle = this.gun.userData.muzzle;
 
     /**
      * 枪挂手电的灯头：一个自发光的小方块。
@@ -74,9 +94,11 @@ export class BlockyRig {
       color: 0xffe2b0,
     }));
     this.lamp.scale.set(0.13, 0.13, 0.13);
-    this.lamp.position.set(0, 0.1, -R.gun.z + 0.05);
+    this.lamp.position.set(0, 0.08, muzzleLocalZ('pistol') + 0.08);
     this.lamp.visible = false;
     this.gunPivot.add(this.lamp);
+
+    this.attachKit(resolvedKit, color);
 
     this.walkPhase = 0;
     this.recoil = 0;
@@ -92,6 +114,42 @@ export class BlockyRig {
      */
     this.deathAmt = 0;
     this.deathYaw = 0;      // 朝哪一侧倒（受击方向决定）
+  }
+
+  addKitPart(size, color, name, pos, parent = this.body, hideInFp = true) {
+    const mesh = part(size, color, name);
+    mesh.position.set(pos.x, pos.y, pos.z);
+    parent.add(mesh);
+    this.kitParts.push(mesh);
+    if (hideInFp) this.fpHide.push(mesh);
+    return mesh;
+  }
+
+  attachKit(kit, bodyColor) {
+    const dark = PALETTE.gearDark;
+    const boot = PALETTE.boot;
+    const visor = PALETTE.visor;
+    if (kit === 'player') {
+      this.addKitPart({ x: 0.56, y: 0.16, z: 0.56 }, dark, 'helmet', { x: 0, y: 0.28, z: 0 }, this.headPivot);
+      this.addKitPart({ x: 0.42, y: 0.08, z: 0.12 }, visor, 'visor', { x: 0, y: 0.12, z: -0.22 }, this.headPivot);
+      this.addKitPart({ x: 0.68, y: 0.42, z: 0.42 }, PALETTE.armor, 'vest', { x: 0, y: 1.08, z: 0.02 });
+      this.addKitPart({ x: 0.16, y: 0.14, z: 0.18 }, dark, 'pouchL', { x: -0.38, y: 0.92, z: 0.08 });
+      this.addKitPart({ x: 0.16, y: 0.14, z: 0.18 }, dark, 'pouchR', { x: 0.38, y: 0.92, z: 0.08 }, this.body, false);
+      this.addKitPart({ x: 0.14, y: 0.12, z: 0.16 }, PALETTE.cyan, 'radio', { x: -0.34, y: 1.38, z: 0.04 });
+      this.addKitPart({ x: 0.28, y: 0.12, z: 0.30 }, boot, 'bootL', { x: 0, y: -0.68, z: 0.02 }, this.legL);
+      this.addKitPart({ x: 0.28, y: 0.12, z: 0.30 }, boot, 'bootR', { x: 0, y: -0.68, z: 0.02 }, this.legR);
+    } else if (kit === 'armored') {
+      this.addKitPart({ x: 0.58, y: 0.22, z: 0.58 }, dark, 'helm', { x: 0, y: 0.32, z: 0 }, this.headPivot);
+      this.addKitPart({ x: 0.22, y: 0.16, z: 0.28 }, PALETTE.armor, 'padL', { x: -0.42, y: 1.36, z: 0 });
+      this.addKitPart({ x: 0.22, y: 0.16, z: 0.28 }, PALETTE.armor, 'padR', { x: 0.42, y: 1.36, z: 0 });
+      this.addKitPart({ x: 0.28, y: 0.12, z: 0.22 }, PALETTE.armor, 'kneeL', { x: 0, y: -0.28, z: 0.06 }, this.legL);
+      this.addKitPart({ x: 0.28, y: 0.12, z: 0.22 }, PALETTE.armor, 'kneeR', { x: 0, y: -0.28, z: 0.06 }, this.legR);
+    } else {
+      this.addKitPart({ x: 0.46, y: 0.16, z: 0.10 }, visor, 'mask', { x: 0, y: 0.10, z: -0.24 }, this.headPivot);
+      this.addKitPart({ x: 0.62, y: 0.08, z: 0.38 }, dark, 'belt', { x: 0, y: 0.72, z: 0 });
+      this.addKitPart({ x: 0.28, y: 0.10, z: 0.28 }, boot, 'bootL', { x: 0, y: -0.68, z: 0.02 }, this.legL);
+      this.addKitPart({ x: 0.28, y: 0.10, z: 0.28 }, boot, 'bootR', { x: 0, y: -0.68, z: 0.02 }, this.legR);
+    }
   }
 
   makeLimb(size, color, name, x, pivotY) {
@@ -199,15 +257,30 @@ export class BlockyRig {
     this.legR.rotation.x = -sw;
     // 移动时躯干轻微前倾
     this.torso.rotation.x = moving ? -0.06 - amp * 0.04 : 0;
+    // 护甲壳挂在 body 下、与 torso 同级，蹲伏/倾斜/倒地都通过 body
+    // 自动传递，只有这一行 torso 自己的局部旋转需要手动同步
+    if (this.armorShell) this.armorShell.rotation.x = this.torso.rotation.x;
 
     // 后坐回弹
     if (this.recoil > 0) {
       this.recoil = Math.max(0, this.recoil - dt * 7);
-      this.gun.position.z = -RIG.gun.z / 2 - 0.1 + this.recoil * 0.22;
+      this.gun.position.z = this.recoil * 0.22;
     }
   }
 
   kick(amount = 1) { this.recoil = Math.min(1, this.recoil + amount); }
+
+  setGun(weaponId = 'pistol') {
+    const id = weaponId || 'pistol';
+    if (this.gunId === id && this.gun) return;
+    this.gunId = id;
+    if (this.gun) this.gunPivot.remove(this.gun);
+    this.gun = buildGunModel(id);
+    this.gun.position.z = 0;
+    this.gunPivot.add(this.gun);
+    this.muzzle = this.gun.userData.muzzle;
+    this.lamp.position.set(0, 0.08, muzzleLocalZ(id) + 0.08);
+  }
 
   setVisible(v) { this.root.visible = v; }
 
@@ -223,6 +296,7 @@ export class BlockyRig {
     this.torso.visible = !on;
     this.legL.visible = !on;
     this.legR.visible = !on;
+    for (const m of this.fpHide) m.visible = !on;
     // 手臂在第一人称里不投影，否则自己的影子会糊在准星附近
     for (const m of [this.armL, this.armR]) {
       m.traverse((o) => { if (o.isMesh) o.castShadow = !on; });

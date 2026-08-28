@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRENADE, PALETTE } from '../config.js';
+import { GRENADE, GRENADES, PALETTE } from '../config.js';
 
 /**
  * 手雷：抛物线飞行 → 撞墙反弹 → 引信到点爆炸。
@@ -18,16 +18,18 @@ import { GRENADE, PALETTE } from '../config.js';
 const GEO = new THREE.BoxGeometry(0.22, 0.22, 0.22);
 
 class Grenade {
-  constructor(scene, world, pos, vel, ownerIsPlayer) {
+  constructor(scene, world, pos, vel, ownerIsPlayer, spec = GRENADE) {
     this.world = world;
+    this.spec = spec;
+    this.kind = spec.id ?? 'he';
     this.pos = pos.clone();
     this.vel = vel.clone();
-    this.fuse = GRENADE.fuseSec;
+    this.fuse = spec.fuseSec;
     this.ownerIsPlayer = ownerIsPlayer;
     this.done = false;
 
     this.mesh = new THREE.Mesh(GEO, new THREE.MeshLambertMaterial({
-      color: 0x4a5a3a,          // 军绿，和拾取物的亮绿有明显区分
+      color: spec.color ?? 0x4a5a3a,
     }));
     this.mesh.position.copy(this.pos);
     this.mesh.castShadow = true;
@@ -44,9 +46,9 @@ class Grenade {
    */
   update(dt) {
     this.fuse -= dt;
-    this.vel.y += GRENADE.gravity * dt;
+    this.vel.y += this.spec.gravity * dt;
 
-    const r = GRENADE.radiusVox;
+    const r = this.spec.radiusVox;
     for (const axis of ['x', 'y', 'z']) {
       const step = this.vel[axis] * dt;
       if (step === 0) continue;
@@ -61,12 +63,12 @@ class Grenade {
         probe.x + r, probe.y + r, probe.z + r
       )) {
         // 撞到了：反弹并损失能量
-        this.vel[axis] *= -GRENADE.bounce;
+        this.vel[axis] *= -this.spec.bounce;
         if (axis === 'y' && Math.abs(this.vel.y) < 1.2) {
           // 竖直速度已经很小 → 认为落地，水平方向加摩擦开始滚停
           this.vel.y = 0;
-          this.vel.x *= GRENADE.friction;
-          this.vel.z *= GRENADE.friction;
+          this.vel.x *= this.spec.friction;
+          this.vel.z *= this.spec.friction;
         }
       } else {
         this.pos[axis] = next;
@@ -101,12 +103,13 @@ export class GrenadeSystem {
   }
 
   /** 投掷。dir 应当是归一化的视线方向。 */
-  throwFrom(pos, dir, ownerIsPlayer = true) {
+  throwFrom(pos, dir, ownerIsPlayer = true, kind = 'he') {
+    const spec = GRENADES[kind] ?? GRENADE;
     // 稍微上抬：直接沿视线扔会导致平视时手雷贴地滚，扔不出距离
     this._v.copy(dir).normalize();
     this._v.y += 0.22;
-    this._v.normalize().multiplyScalar(GRENADE.throwSpeed);
-    const g = new Grenade(this.scene, this.world, pos, this._v, ownerIsPlayer);
+    this._v.normalize().multiplyScalar(spec.throwSpeed);
+    const g = new Grenade(this.scene, this.world, pos, this._v, ownerIsPlayer, spec);
     this.items.push(g);
     return g;
   }
@@ -128,14 +131,15 @@ export class GrenadeSystem {
   explode(g) {
     const p = g.pos;
     // 闪光 + 碎块 + 血雾色的火花
+    const spec = g.spec ?? GRENADE;
     this.flashPool.pop(p.x, p.y, p.z, {
-      intensity: GRENADE.flashIntensity,
-      distance: GRENADE.flashDistance,
-      lifeMs: GRENADE.flashMs,
-      color: 0xffd090,
+      intensity: spec.flashIntensity,
+      distance: spec.flashDistance,
+      lifeMs: spec.flashMs,
+      color: spec.id === 'flash' ? 0xffffff : 0xffd090,
     });
-    this.fx.explosion(p, GRENADE.debris);
-    if (this.onExplode) this.onExplode(p, g.ownerIsPlayer);
+    this.fx.explosion(p, spec.debris);
+    if (this.onExplode) this.onExplode(p, g.ownerIsPlayer, spec);
   }
 
   /**
@@ -145,14 +149,22 @@ export class GrenadeSystem {
    * 依然有意义。用爆心到目标胸口的连线判定，不做多点采样：
    * 单条射线足够表达「有没有掩体」，多点采样的收益不值那个成本。
    */
-  damageAt(center, tx, ty, tz) {
+  damageAt(center, tx, ty, tz, spec = GRENADE) {
+    if ((spec.maxDamage ?? 0) <= 0) return 0;
     const d = Math.hypot(center.x - tx, center.y - ty, center.z - tz);
-    if (d > GRENADE.radius) return 0;
+    if (d > spec.radius) return 0;
     if (this.world.lineBlocked(center.x, center.y, center.z, tx, ty, tz)) return 0;
-    const t = 1 - d / GRENADE.radius;
+    const t = 1 - d / spec.radius;
     return Math.round(
-      GRENADE.minDamage + (GRENADE.maxDamage - GRENADE.minDamage) * t
+      spec.minDamage + (spec.maxDamage - spec.minDamage) * t
     );
+  }
+
+  /** 闪光弹：视线内且在半径内才致盲 */
+  canBlind(center, tx, ty, tz, spec = GRENADES.flash) {
+    const d = Math.hypot(center.x - tx, center.y - ty, center.z - tz);
+    if (d > spec.radius) return false;
+    return !this.world.lineBlocked(center.x, center.y, center.z, tx, ty, tz);
   }
 
   get count() { return this.items.length; }

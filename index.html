@@ -46,6 +46,7 @@
   /* 手雷计数 */
   #nade-box{ position:absolute; right:24px; bottom:104px; text-align:right;
     font-size:.7rem; letter-spacing:.14em; color:var(--muted); }
+  #nade-kind{ display:block; font-size:.58rem; letter-spacing:.18em; color:var(--cyan); }
   #nade-box .n{ font-size:1.3rem; font-weight:700; color:var(--good);
     letter-spacing:.06em; }
   #nade-box.empty .n{ color:var(--muted); }
@@ -136,13 +137,40 @@
   #brief{ position:absolute; inset:0; display:flex; align-items:center;
     justify-content:center; background:rgba(8,10,14,.94); overflow-y:auto;
     pointer-events:auto; }
-  #brief-inner{ width:min(940px,92vw); padding:26px 30px 22px;
+  #brief-inner{ width:min(760px,92vw); padding:22px 26px 18px;
     border:1px solid var(--rule); background:rgba(12,16,22,.96); }
   #brief h2{ font-size:1.0rem; letter-spacing:.3em; color:var(--amber);
     font-weight:700; }
   #brief .sub{ font-size:.64rem; letter-spacing:.22em; color:var(--muted);
     margin-top:4px; }
   #brief hr{ border:0; border-top:1px solid var(--rule); margin:16px 0 14px; }
+  .bpage{ display:none; }
+  .bpage.on{ display:block; }
+  .bpager{ display:flex; gap:8px; margin-top:14px; }
+  .bpager button{
+    flex:1; padding:11px; border:1px solid var(--rule); background:rgba(0,0,0,.35);
+    color:var(--ink); font-family:var(--mono); letter-spacing:.16em; cursor:pointer;
+  }
+  .bpager button.primary{ background:var(--amber); color:#12161d; border:0; font-weight:700; }
+  .dots{ display:flex; gap:6px; justify-content:center; margin:8px 0 0; }
+  .dots i{ width:7px; height:7px; background:var(--rule); display:block; }
+  .dots i.on{ background:var(--amber); }
+  .goal3{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:14px; }
+  .goal3 .g{ border:1px solid var(--rule); padding:12px 10px; text-align:center; }
+  .goal3 .n{ font-size:1.4rem; color:var(--amber); font-weight:700; }
+  .goal3 .l{ font-size:.62rem; color:var(--muted); letter-spacing:.12em; margin-top:4px; }
+  #mini-map{ width:100%; height:280px; background:#0b0f14; border:1px solid var(--rule); }
+  .map-cap{ font-size:.68rem; color:var(--muted); margin-top:8px; line-height:1.7; }
+  .loadout-grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .lcard{ border:1px solid var(--rule); padding:12px; cursor:pointer; background:rgba(0,0,0,.28); }
+  .lcard.on{ border-color:var(--amber); background:rgba(245,166,35,.1); }
+  .lcard .t{ font-size:.82rem; color:var(--amber); letter-spacing:.12em; }
+  .lcard .d{ font-size:.66rem; color:var(--muted); margin-top:6px; line-height:1.6; }
+  .keys4{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:12px; }
+  .keys4 span{ border:1px solid var(--rule); padding:8px 6px; text-align:center;
+    font-size:.62rem; color:var(--muted); }
+  .keys4 b{ display:block; color:var(--ink); font-size:.78rem; margin-bottom:4px; }
+  #flash-white{ position:absolute; inset:0; background:#fff; opacity:0; pointer-events:none; }
   .bsec{ margin-bottom:15px; }
   .bsec > .h{ font-size:.63rem; letter-spacing:.24em; color:var(--cyan);
     margin-bottom:7px; }
@@ -220,7 +248,7 @@
 
   <div id="objective">
     <div class="lbl">剩余敌人</div>
-    <div id="enemy-count">12 / 12</div>
+    <div id="enemy-count">– / –</div>
   </div>
 
   <div id="stats">
@@ -244,7 +272,8 @@
     <div id="hp-text">100 / 100 · <b>护甲 200</b></div>
   </div>
 
-  <div id="nade-box">手雷 <span class="n" id="nade-count">3</span></div>
+  <div id="nade-box"><span id="nade-kind">闪光</span>手雷 <span class="n" id="nade-count">3</span></div>
+  <div id="flash-white"></div>
 
   <div id="ammo-box">
     <div id="weapon-name">M19</div>
@@ -280,7 +309,7 @@
 
   <div id="hint">
     <div class="big">点击进入</div>
-    <div class="small">清掉全部 12 个敌人 · 返回庭院撤离 · ESC 退出</div>
+    <div class="small">清掉全部 <span id="hint-count">12</span> 个敌人 · 返回庭院撤离 · ESC 退出</div>
   </div>
 
   <div id="expose">
@@ -291,83 +320,64 @@
   <div id="brief">
     <div id="brief-inner">
       <h2>任务简报 · 肃清协议</h2>
-      <div class="sub">OPERATION BLACKHOUSE — 单人清剿 · 无支援 · 无重生</div>
+      <div class="sub">OPERATION BLACKHOUSE — 进去，清掉，出来</div>
+      <div class="dots" id="brief-dots"><i class="on"></i><i></i><i></i><i></i></div>
       <hr>
 
-      <div class="bcols">
-        <div>
-          <div class="bsec">
-            <div class="h">任务目标</div>
-            <ul>
-              <li>清除建筑内全部 <b>12 名</b>敌对目标</li>
-              <li>完成后返回<b>南侧庭院</b>的绿色标记点撤离</li>
-              <li>没有存档点，阵亡即任务失败</li>
-            </ul>
-          </div>
-
-          <div class="bsec">
-            <div class="h">地形情报</div>
-            <ul>
-              <li>单层平房，<b>南侧正门</b>已敞开，东侧另有一扇侧门</li>
-              <li>由南向北依次是：<b>门厅 / 客厅 / 厨房</b> → 南过道 →
-                  <b>主走廊</b> → <b>仓库</b>与两侧储藏 → 卧室 / 书房</li>
-              <li>主走廊有<b>错位墙垛</b>，一眼看不到底，推进必须切角</li>
-              <li>室内<b>没有任何光源</b>，只有庭院有月光</li>
-              <li>医疗包 <b>3 个</b>（过道 / 仓库 / 走廊），另有 SMG 与 AR 各一把</li>
-            </ul>
-          </div>
+      <div class="bpage on" data-page="0">
+        <div class="bsec"><div class="h">任务</div></div>
+        <div class="goal3">
+          <div class="g"><div class="n" id="brief-count">12</div><div class="l">清除目标</div></div>
+          <div class="g"><div class="n">庭院</div><div class="l">完成后撤离</div></div>
+          <div class="g"><div class="n">无存档</div><div class="l">阵亡即失败</div></div>
         </div>
+      </div>
 
-        <div>
-          <div class="bsec">
-            <div class="h">敌情：两类行为</div>
-            <div class="etype">
-              <span class="sw" style="background:#e5484d"></span>
-              <span class="tx"><b>伏击者 ×4</b> — 蹲在暗处不动、<b>不开手电</b>。
-                多为霰弹枪，贴脸极度危险。转角必须先探头。</span>
-            </div>
-            <div class="etype">
-              <span class="sw" style="background:#f5a623"></span>
-              <span class="tx"><b>巡逻者 ×8</b> — 沿固定路线走动、<b>手电常亮</b>。
-                远处扫过来的光柱就是预警。被发现会呼叫附近同伴。</span>
-            </div>
+      <div class="bpage" data-page="1">
+        <div class="bsec"><div class="h">地图</div></div>
+        <svg id="mini-map" viewBox="0 0 64 64" aria-label="关卡俯视简图"></svg>
+        <p class="map-cap">南门正对你。北墙是后门，东西各有侧门。室内全黑，走廊要切角。悬停房间看名字。</p>
+      </div>
+
+      <div class="bpage" data-page="2">
+        <div class="bsec"><div class="h">装备</div></div>
+        <p class="map-cap" style="margin-bottom:10px">手枪是保底武器。手雷数量随难度变化。</p>
+        <div class="loadout-grid">
+          <div class="lcard on" data-pistol="pistol">
+            <div class="t">M19 消音</div>
+            <div class="d">射速慢 · 噪音低 · 适合潜行点射</div>
           </div>
-
-          <div class="bsec">
-            <div class="h">头顶状态指示器</div>
-            <div class="legend">
-              <span><i style="background:#6b7480"></i>平静 未察觉</span>
-              <span><i style="background:#f5d76e"></i>搜索 察觉异常</span>
-              <span><i style="background:#f5a623"></i>警戒 正在举枪</span>
-              <span><i style="background:#e5484d"></i>战斗 已开火</span>
-            </div>
-            <p style="margin-top:8px;color:#8b93a3">
-              方块下方的横条是<b>警戒度</b>，涨满即进入战斗。
-              指示器可见距离随难度递减。
-            </p>
+          <div class="lcard" data-pistol="pistolFast">
+            <div class="t">M19C 快射</div>
+            <div class="d">射速快 · 更响 · 近距离连点</div>
           </div>
-
-          <div class="bsec">
-            <div class="h">关键战术</div>
-            <ul>
-              <li><b>关掉手电（F）可大幅降低警戒度</b> —— 回落速度是开灯时的
-                  6 倍，脱战时间缩短一半以上</li>
-              <li>手电光斑会先于你被发现，别把光扫到敌人身上</li>
-              <li>Ctrl 慢走 / Shift 蹲伏可显著降低脚步噪音</li>
-              <li>Q/Z 侧身探头，视野探出墙角而命中盒不动</li>
-              <li>护甲先于生命扣除，护甲破了就该撤了</li>
-            </ul>
+          <div class="lcard on" data-nade="flash">
+            <div class="t">闪光弹 ×2</div>
+            <div class="d">数量多 · 致盲 · 不伤人 · 可照亮黑屋</div>
+          </div>
+          <div class="lcard" data-nade="he">
+            <div class="t">高爆 ×½</div>
+            <div class="d">数量少 · 杀伤强 · 会惊动整层</div>
           </div>
         </div>
       </div>
 
-      <hr>
-      <div class="bsec" style="margin-bottom:0">
-        <div class="h">选择难度</div>
+      <div class="bpage" data-page="3">
+        <div class="bsec"><div class="h">准备</div></div>
         <div id="diffs"></div>
+        <div class="keys4">
+          <span><b>F</b>手电</span>
+          <span><b>Ctrl</b>慢走</span>
+          <span><b>Q/Z</b>探头</span>
+          <span><b>3</b>手雷</span>
+        </div>
       </div>
 
-      <button id="brief-go">开始任务</button>
+      <div class="bpager">
+        <button id="brief-prev" type="button">上一页</button>
+        <button id="brief-next" type="button">下一页</button>
+        <button id="brief-go" class="primary" type="button">开始任务</button>
+      </div>
     </div>
   </div>
 

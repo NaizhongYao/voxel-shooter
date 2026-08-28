@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PALETTE, PLAYER, LIGHT } from '../config.js';
+import { PALETTE, PLAYER, LIGHT, ARMOR_ABSORB, ARMOR_MAX } from '../config.js';
 import { D } from '../difficulty.js';
 import { BlockyRig } from '../player/rig.js';
 import { WEAPONS, WeaponInstance, HITBOX_MULT } from './weapons.js';
@@ -115,6 +115,16 @@ export class Enemy {
 
     this.hpMax = D().enemyHp;            // 简单 50 / 困难 60 / 专家 70
     this.hp = this.hpMax;
+    /**
+     * 武装敌人（spec.armored）：护甲先扣、生命后扣，与玩家侧
+     * PLAYER.armorAbsorb 同一套公式（见 takeDamage）。护甲值不随难度
+     * 缩放——它是关卡里固定的战术要素，不是难度杠杆，缩放交给
+     * D().enemyHp 一个变量就够了，两个都变会让「为什么这枪没打死」
+     * 变得难以判断。
+     */
+    this.armored = !!spec.armored;
+    this.armorMax = this.armored ? ARMOR_MAX : 0;
+    this.armor = this.armorMax;
     this.state = STATE.IDLE;
     this.stateTime = 0;
     this.weapon = new WeaponInstance(WEAPONS[spec.weapon]);
@@ -149,8 +159,14 @@ export class Enemy {
     this.alertLevel = 0;
 
     // 视觉：方块人形。伏击者初始蹲伏（轮廓矮、藏在掩体后），被发现后站起
-    this.rig = new BlockyRig(PALETTE.threat, { isPlayer: false });
+    // 武装敌人（armored）在躯干外挂一层深灰护甲壳，见 BlockyRig 的 armored 选项。
+    this.rig = new BlockyRig(PALETTE.threat, {
+      isPlayer: false,
+      armored: this.armored,
+      kit: this.armored ? 'armored' : 'enemy',
+    });
     this.rig.root.position.copy(this.pos);
+    this.rig.setGun(spec.weapon);
 
     this.isAmbusher = this.archetype === ARCHETYPE.AMBUSHER;
     this.crouched = this.isAmbusher;      // 只有伏击者初始是蹲的
@@ -335,6 +351,18 @@ export class Enemy {
    */
   takeDamage(amount, zone, dir = null) {
     if (this.dead) return false;
+
+    /**
+     * 武装敌人：护甲先吸收 ARMOR_ABSORB 比例的伤害，其余渗透到生命。
+     * 与玩家侧 Player.applyDamage 同一套公式（见 player/player.js），
+     * 保持「护甲机制」在敌我两侧手感一致——玩家打武装敌人时的体感
+     * 应该跟自己中弹时是同一种「盔甲在慢慢吃伤害」的感觉。
+     */
+    if (this.armored && this.armor > 0) {
+      const absorbed = Math.min(this.armor, Math.round(amount * ARMOR_ABSORB));
+      this.armor -= absorbed;
+      amount -= absorbed;
+    }
     this.hp -= amount;
 
     /**
@@ -363,6 +391,7 @@ export class Enemy {
       this.flashlightOn = false;
       // 倒地而不是凭空消失 —— 玩家需要看到「他死了」
       this.rig.startDeath(dir ? dir.x : 0, dir ? dir.z : 1);
+      this.rig.gunPivot.visible = false;
       return true;                     // 击杀
     }
     return false;
@@ -406,8 +435,15 @@ export class Enemy {
     return !this.world.lineBlocked(this.pos.x, this.eyeY, this.pos.z, px, py, pz);
   }
 
-  /** 听到噪音 → 进入调查 */
-  hearNoise(x, y, z, radius) {
+  /**
+   * 听到噪音 → 进入调查，或（大口径武器）直接跳级到警戒。
+   *
+   * @param loud 是否为「大口径」噪音（见 combat.emitNoise 与
+   *             config.NOISE_SPIKE_THRESHOLD）。true 时 IDLE 敌人
+   *             跳过慢悠悠的 INVESTIGATE，直接举枪进入 ALERT ——
+   *             霰弹/DMR 的枪声就是这么大，听到不该只是「走过去看看」。
+   */
+  hearNoise(x, y, z, radius, loud = false) {
     if (this.dead || this.state === STATE.COMBAT) return false;
     const dy = Math.abs(y - this.pos.y);
     // 跨楼板半径衰减
@@ -416,8 +452,12 @@ export class Enemy {
     if (d > effective) return false;
     this.investigateTarget = new THREE.Vector3(x, y, z);
     if (this.state === STATE.IDLE) {
-      this.state = STATE.INVESTIGATE;
-      this.stateTime = 0;
+      if (loud) {
+        this.toAlert();
+      } else {
+        this.state = STATE.INVESTIGATE;
+        this.stateTime = 0;
+      }
     }
     return true;
   }

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PALETTE, LIGHT, PLAYER } from '../config.js';
+import { PALETTE, LIGHT, PLAYER, NOISE_SPIKE_THRESHOLD } from '../config.js';
 import { D } from '../difficulty.js';
 import { BLOCKS } from '../voxel/blocks.js';
 import { PERCEPTION, rayBox } from './enemy.js';
@@ -78,8 +78,9 @@ export class Combat {
     player.rig.kick(spec.recoil.kick);
     cam.kick(spec.recoil.shake);
 
-    // 噪音：惊动半径内的敌人
-    this.emitNoise(origin.x, origin.y, origin.z, spec.noise);
+    // 噪音：惊动半径内的敌人。口径越大（noise 越高），越可能让敌人
+    // 直接举枪而不是慢悠悠地走过来查看——见 emitNoise 的 loud 参数。
+    this.emitNoise(origin.x, origin.y, origin.z, spec.noise, spec.noise >= NOISE_SPIKE_THRESHOLD);
 
     if (anyHit) this.stats.hits++;
     return true;
@@ -137,9 +138,6 @@ export class Combat {
           const killed = target.enemy.takeDamage(dmg, target.zone, dir);
           if (killed) {
             this.stats.kills++;
-            // 死亡爆散的量减少：现在有倒地动画了，不需要炸成一团方块来
-            // 表达「他死了」。少量血雾 + 倒地比一堆碎块更好读。
-            this.fx.deathBurst(target.enemy.pos, PALETTE.threat, 8);
             this.markBlood(target.enemy.pos);
             if (this.onKill) this.onKill(target.enemy);
           }
@@ -198,13 +196,18 @@ export class Combat {
       intensity: LIGHT.muzzle.intensity * 0.8,
       distance: LIGHT.muzzle.distance,
     });
-    this.emitNoise(origin.x, origin.y, origin.z, spec.noise);
+    this.emitNoise(origin.x, origin.y, origin.z, spec.noise, spec.noise >= NOISE_SPIKE_THRESHOLD);
     // 敌人的枪声按距离衰减 —— 远处的交火声是玩家的重要情报
     if (this.onEnemyShot) this.onEnemyShot(spec, dist);
   }
 
-  emitNoise(x, y, z, radius) {
-    for (const e of this.enemies) e.hearNoise(x, y, z, radius);
+  /**
+   * @param loud 大口径武器（noise ≥ NOISE_SPIKE_THRESHOLD，见 config.js）。
+   *             范围内 IDLE 的敌人会跳过 INVESTIGATE 直接进入 ALERT ——
+   *             霰弹/DMR 的枪声就是这么大，手枪/SMG/AR 不触发。
+   */
+  emitNoise(x, y, z, radius, loud = false) {
+    for (const e of this.enemies) e.hearNoise(x, y, z, radius, loud);
   }
 
   /** 血迹贴花：标记「这里清过」 */

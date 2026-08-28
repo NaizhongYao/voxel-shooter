@@ -32,6 +32,12 @@ export const PALETTE = {
   white:     0xffffff,
   bloodDark: 0x7a2c2c,
   brass:     0xb08d3f,
+  // 武装敌人的护甲外壳。深灰蓝，明显区别于敌人本体的 threat 红——
+  // 玩家一眼就能认出「这个敌人扛着甲，别浪费弹药打身体」。
+  armor:     0x4a5568,
+  gearDark:  0x2a3038,
+  visor:     0x0b0e12,
+  boot:      0x1c1814,
 
   // 建筑材质三档明度：地板最亮、墙中等、天花板最暗。
   // 抬头比低头更暗，这是室内压迫感最廉价的来源。
@@ -222,26 +228,81 @@ export const PLAYER = {
  * 伤害按距离线性衰减，且必须有视线：手雷不会穿墙杀人，
  * 躲到墙后就是安全的（这是玩家和敌人共享的规则）。
  */
-export const GRENADE = {
-  count: 3,                     // 开局携带量
-  throwSpeed: 13.15,            // 初速 vox/s（原 12；抛物线射程∝v²，√1.2 倍速度换算为 +20% 投掷距离）
-  gravity: -20,
-  fuseSec: 2.0,                 // 引信时间
-  radius: 19.5,                 // 杀伤半径 vox（原 6.5，扩大 3 倍）
-  maxDamage: 180,               // 中心伤害（对 60 HP 的敌人是必杀）
-  minDamage: 25,                // 边缘伤害
-  selfDamageMul: 0.7,           // 自伤打折（手滑不至于必死）
-  bounce: 0.35,                 // 撞墙后的速度保留比例
-  friction: 0.72,               // 落地滚动摩擦
-  radiusVox: 0.14,              // 弹体半径（碰撞用）
-  noise: 26,                    // 爆炸噪音半径（比枪声大得多）
-  // 爆炸表现
-  flashIntensity: 2700,         // 瞬时点光强度（坎德拉，原 900，扩大 3 倍）
-  flashDistance: 66,            // 原 22，扩大 3 倍
-  flashMs: 180,
-  debris: 102,                  // 爆炸碎块数量（原 34，扩大 3 倍）
-  shake: 1.0,                   // 震屏强度
+/**
+ * 敌人感知的两个数据驱动常量：噪音警戒跳级 + 武装敌人护甲。
+ *
+ * NOISE_SPIKE_THRESHOLD：武器 noise 值 ≥ 此阈值时，范围内 IDLE 的敌人
+ * 直接跳到 ALERT（举枪），跳过慢悠悠的 INVESTIGATE 阶段。卡在 AR(35) 和
+ * 霰弹(40) 之间——手枪/SMG/AR 不触发，霰弹/DMR 触发。「口径越大越可能
+ * 引来 aggression spike」就是这一个数字。
+ *
+ * ARMOR_ABSORB：武装敌人的护甲吸收比例，与玩家侧 PLAYER.armorAbsorb
+ * 同源同理（护甲先扣、生命后扣，留一点渗透伤害保证有反馈）。
+ * ARMOR_MAX：武装敌人的护甲值，约等于挨 1–2 枪 AR 才能击穿。
+ */
+export const NOISE_SPIKE_THRESHOLD = 38;
+export const ARMOR_ABSORB = 0.85;
+export const ARMOR_MAX = 40;
+
+export const GRENADES = {
+  he: {
+    id: 'he',
+    label: '高爆',
+    countMul: 0.5,
+    throwSpeed: 13.15,
+    gravity: -20,
+    fuseSec: 2.0,
+    radius: 19.5,
+    maxDamage: 180,
+    minDamage: 25,
+    selfDamageMul: 0.7,
+    bounce: 0.35,
+    friction: 0.72,
+    radiusVox: 0.14,
+    noise: 26,
+    flashIntensity: 2700,
+    flashDistance: 66,
+    flashMs: 180,
+    debris: 102,
+    shake: 1.0,
+    color: 0x4a5a3a,
+    blindSec: 0,
+  },
+  flash: {
+    id: 'flash',
+    label: '闪光',
+    countMul: 2,
+    throwSpeed: 13.15,
+    gravity: -20,
+    fuseSec: 1.0,
+    radius: 14,
+    maxDamage: 0,
+    minDamage: 0,
+    selfDamageMul: 0,
+    bounce: 0.4,
+    friction: 0.7,
+    radiusVox: 0.14,
+    noise: 22,
+    flashIntensity: 4200,
+    flashDistance: 28,
+    flashMs: 1500,
+    debris: 30,
+    shake: 0.35,
+    color: 0xd8dee8,
+    blindSec: 3.5,
+    playerFlashMs: 1200,
+  },
 };
+
+/** 兼容旧测试与旧调用：默认仍是高爆参数表 */
+export const GRENADE = GRENADES.he;
+
+/** 开局手雷数量：闪光 ×2，高爆 ×0.5（至少 1） */
+export function grenadeInventory(kind, baseCount) {
+  const spec = GRENADES[kind] ?? GRENADES.he;
+  if (spec.countMul >= 1) return Math.round(baseCount * spec.countMul);
+  return Math.max(1, Math.floor(baseCount * spec.countMul));
+}
 
 /** 方块人形部件尺寸（vox），来自 GDD 02 章 */
 export const RIG = {

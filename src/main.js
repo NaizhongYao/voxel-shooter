@@ -1,11 +1,11 @@
 import * as THREE from 'three';
-import { RENDER, LIGHT, PLAYER, WORLD, PALETTE, GRENADE } from './config.js';
+import { RENDER, LIGHT, PLAYER, WORLD, PALETTE, GRENADE, GRENADES, grenadeInventory } from './config.js';
 import {
   DIFFICULTIES, DIFFICULTY_ORDER, resolveDifficulty, setDifficulty, D,
 } from './difficulty.js';
-import { buildLevel01, SPAWN, DOORS, MAIN_ENTRANCE } from './level/level01.js';
+import { buildLevel01, SPAWN, DOORS, MAIN_ENTRANCE, ROOMS, BUILDING } from './level/level01.js';
 import { DoorManager } from './systems/doors.js';
-import { ENEMY_SPAWNS, MEDKIT_SPAWNS, WEAPON_SPAWNS } from './level/spawns.js';
+import { ENEMY_SPAWNS, ENEMY_COUNT_BY_TIER, MEDKIT_SPAWNS, WEAPON_SPAWNS } from './level/spawns.js';
 import { VoxelMesher } from './voxel/mesher.js';
 import { Player } from './player/player.js';
 import { OrbitFollowCamera } from './player/camera.js';
@@ -47,9 +47,11 @@ const hud = {
   dbgKeys: $('dbg-keys'),
   banner: $('banner'), bannerTitle: $('banner-title'), bannerBody: $('banner-body'),
   prompt: $('prompt'), stats: $('stats'), boot: $('boot'),
-  brief: $('brief'), briefGo: $('brief-go'), diffs: $('diffs'),
+  brief: $('brief'), briefGo: $('brief-go'), briefPrev: $('brief-prev'),
+  briefNext: $('brief-next'), briefDots: $('brief-dots'), diffs: $('diffs'),
   expose: $('expose'), exposeFill: $('expose-fill'),
-  hint: $('hint'),
+  hint: $('hint'), hintCount: $('hint-count'), briefCount: $('brief-count'),
+  nadeKind: $('nade-kind'), flashWhite: $('flash-white'), miniMap: $('mini-map'),
 };
 
 // ── Renderer ───────────────────────────────────────────────────────────────
@@ -115,9 +117,28 @@ flashPool.setVisibilityProbe((x, y, z) => {
 });
 const effects = new Effects(scene, world);
 const input = new Input(canvas);
-const loadout = new Loadout();
+function readLoadoutChoice() {
+  try {
+    const raw = JSON.parse(sessionStorage.getItem('loadoutChoice') || '{}');
+    return {
+      pistol: raw.pistol === 'pistolFast' ? 'pistolFast' : 'pistol',
+      nade: raw.nade === 'he' ? 'he' : 'flash',
+    };
+  } catch {
+    return { pistol: 'pistol', nade: 'flash' };
+  }
+}
+function saveLoadoutChoice(choice) {
+  sessionStorage.setItem('loadoutChoice', JSON.stringify(choice));
+}
+const loadoutChoice = readLoadoutChoice();
+const loadout = new Loadout({ pistolId: loadoutChoice.pistol });
 
-const enemies = ENEMY_SPAWNS.map((s) => {
+// 敌人数量按难度分层：简单只生成 tier<=1（7人），困难 tier<=2（10人），
+// 专家全部 12 人。tier 越高只是「追加」，永不移除 tier 1 的敌人，
+// 所以专家难度下永远是完整池子。
+const activeSpawns = ENEMY_SPAWNS.filter((s) => s.tier <= D().enemyTier);
+const enemies = activeSpawns.map((s) => {
   const e = new Enemy(world, s);
   scene.add(e.rig.root);
   return e;
@@ -155,7 +176,9 @@ const game = {
   endTime: 0,
   damageFlash: 0,
   toastUntil: 0,
-  nades: D().grenades,
+  nades: grenadeInventory(loadoutChoice.nade, D().grenades),
+  nadeKind: loadoutChoice.nade,
+  playerFlash: 0,
   /** 玩家死亡后的镇头时间：让倒地动画播完再弹结算面板 */
   deathHold: 0,
   /**
@@ -183,7 +206,7 @@ function buildDifficultyCards() {
       `<div class="ds">${d.subtitle}</div>` +
       `<div class="dd">${d.desc}</div>` +
       `<div class="dstat">生命 ${d.hpMax} · 护甲 ${d.armorMax} · ` +
-      `手雷 ${d.grenades}<br>敌人 ${d.enemyHp} HP · ` +
+      `手雷 ${d.grenades}<br>敌人 ${ENEMY_COUNT_BY_TIER[d.enemyTier]} 人 · ${d.enemyHp} HP · ` +
       `视野 ×${d.visionRangeMul} · 指示器 ${d.indicatorRange} vox</div>`;
     el.addEventListener('click', () => {
       if (d.id === D().id) return;
@@ -194,24 +217,113 @@ function buildDifficultyCards() {
     });
     hud.diffs.appendChild(el);
   }
+  // 简报/点击进入提示里的敌人数量跟着当前难度走——「12」不再是硬编码的
+  // 事实，是 D().enemyTier 对应的那个数字。
+  const n = ENEMY_COUNT_BY_TIER[D().enemyTier];
+  if (hud.hintCount) hud.hintCount.textContent = n;
+  if (hud.briefCount) hud.briefCount.textContent = n;
 }
 buildDifficultyCards();
 
+function drawMiniMap() {
+  const svg = hud.miniMap;
+  if (!svg) return;
+  const names = {
+    bedroom: '卧室', northHall: '北走道', study: '书房',
+    westStore: '西储', warehouse: '仓库', eastStore: '东储',
+    corridor: '走廊', southHall: '南过道', living: '客厅', foyer: '门厅', kitchen: '厨房',
+  };
+  const fills = {
+    foyer: '#f5a623', warehouse: '#3a5a78', corridor: '#2b3240',
+    living: '#3a4354', kitchen: '#3a4354', bedroom: '#4a3f52', study: '#4a3f52',
+  };
+  let html = `<rect x="0" y="48" width="64" height="16" fill="#141c26"/>`;
+  html += `<text x="32" y="61" text-anchor="middle" fill="#9fb4cc" font-size="3.2">你 · 南庭院</text>`;
+  for (const [id, r] of Object.entries(ROOMS)) {
+    html += `<rect data-room="${names[id]}" x="${r.x0}" y="${r.z0}" width="${r.x1 - r.x0}" height="${r.z1 - r.z0}" fill="${fills[id] || '#232b36'}" stroke="#8b93a3" stroke-width="0.25" opacity="0.92"/>`;
+  }
+  html += `<rect x="31" y="46" width="2" height="2" fill="#3fb96f"/>`;
+  html += `<rect x="31" y="5" width="2" height="2" fill="#4cc9f0"/>`;
+  html += `<rect x="5" y="20" width="2" height="1" fill="#4cc9f0"/>`;
+  html += `<rect x="56" y="20" width="2" height="1" fill="#4cc9f0"/>`;
+  html += `<text x="32" y="4.2" text-anchor="middle" fill="#4cc9f0" font-size="2.4">后门</text>`;
+  html += `<text x="3.2" y="19.6" fill="#4cc9f0" font-size="2.2">西</text>`;
+  html += `<text x="58.5" y="19.6" fill="#4cc9f0" font-size="2.2">东</text>`;
+  svg.innerHTML = html;
+  svg.querySelectorAll('rect[data-room]').forEach((el) => {
+    el.addEventListener('mouseenter', () => {
+      const cap = document.querySelector('.map-cap');
+      if (cap) cap.textContent = el.getAttribute('data-room');
+    });
+  });
+  void BUILDING;
+}
+drawMiniMap();
+
+let briefPage = 0;
+const BRIEF_PAGES = 4;
+function showBriefPage(i) {
+  briefPage = Math.max(0, Math.min(BRIEF_PAGES - 1, i));
+  document.querySelectorAll('.bpage').forEach((el) => {
+    el.classList.toggle('on', Number(el.dataset.page) === briefPage);
+  });
+  if (hud.briefDots) {
+    [...hud.briefDots.children].forEach((d, n) => d.classList.toggle('on', n === briefPage));
+  }
+  if (hud.briefPrev) hud.briefPrev.style.visibility = briefPage === 0 ? 'hidden' : 'visible';
+  if (hud.briefNext) hud.briefNext.style.display = briefPage === BRIEF_PAGES - 1 ? 'none' : '';
+  if (hud.briefGo) hud.briefGo.style.display = briefPage === BRIEF_PAGES - 1 ? '' : 'none';
+}
+showBriefPage(0);
+hud.briefPrev?.addEventListener('click', () => showBriefPage(briefPage - 1));
+hud.briefNext?.addEventListener('click', () => showBriefPage(briefPage + 1));
+
+function markLoadoutCards() {
+  document.querySelectorAll('[data-pistol]').forEach((el) => {
+    el.classList.toggle('on', el.dataset.pistol === loadoutChoice.pistol);
+  });
+  document.querySelectorAll('[data-nade]').forEach((el) => {
+    el.classList.toggle('on', el.dataset.nade === loadoutChoice.nade);
+  });
+}
+markLoadoutCards();
+document.querySelectorAll('[data-pistol]').forEach((el) => {
+  el.addEventListener('click', () => {
+    loadoutChoice.pistol = el.dataset.pistol;
+    saveLoadoutChoice(loadoutChoice);
+    markLoadoutCards();
+  });
+});
+document.querySelectorAll('[data-nade]').forEach((el) => {
+  el.addEventListener('click', () => {
+    loadoutChoice.nade = el.dataset.nade;
+    saveLoadoutChoice(loadoutChoice);
+    markLoadoutCards();
+  });
+});
+
 function startMission() {
   if (game.started) return;
+  loadout.setPistol(loadoutChoice.pistol);
+  game.nadeKind = loadoutChoice.nade;
+  game.nades = grenadeInventory(game.nadeKind, D().grenades);
   game.started = true;
   hud.brief.style.display = 'none';
+  syncVitalsHud();
   // 简报是用户手势，正好在这里创建 AudioContext（浏览器要求手势触发）
   audio.init();
   canvas.requestPointerLock?.();
 }
 hud.briefGo.addEventListener('click', startMission);
-// 回车 / 空格也能开始（读完简报的手大概还在键盘上）
 window.addEventListener('keydown', (e) => {
-  if (!game.started && (e.code === 'Enter' || e.code === 'Space')) {
+  if (game.started) return;
+  if (e.code === 'Enter' || e.code === 'Space') {
     e.preventDefault();
-    startMission();
+    if (briefPage < BRIEF_PAGES - 1) showBriefPage(briefPage + 1);
+    else startMission();
   }
+  if (e.code === 'ArrowRight') showBriefPage(briefPage + 1);
+  if (e.code === 'ArrowLeft') showBriefPage(briefPage - 1);
 });
 
 /**
@@ -298,41 +410,52 @@ combat.onKill = (enemy) => {
 // 敌人枪声：按距离衰减。远处的交火声是玩家判断「那边有人」的重要情报。
 combat.onEnemyShot = (spec, dist) => audio.shoot(spec.sound ?? 'medium', dist);
 
-grenades.onExplode = (pos, ownerIsPlayer) => {
+grenades.onExplode = (pos, ownerIsPlayer, spec = GRENADE) => {
   const dist = Math.hypot(pos.x - player.pos.x, pos.z - player.pos.z);
   audio.explosion(dist);
-  cam.kick(GRENADE.shake * Math.max(0.2, 1 - dist / GRENADE.radius));
+  cam.kick(spec.shake * Math.max(0.2, 1 - dist / Math.max(1, spec.radius)));
 
-  // 敌人
+  if (spec.id === 'flash') {
+    const now = performance.now() / 1000;
+    for (const e of enemies) {
+      if (e.dead) continue;
+      if (grenades.canBlind(pos, e.pos.x, e.pos.y + e.height * 0.5, e.pos.z, spec)) {
+        e.blind(now, spec.blindSec);
+      }
+    }
+    if (grenades.canBlind(pos, player.pos.x, player.pos.y + 1.0, player.pos.z, spec)) {
+      game.playerFlash = 1;
+    }
+    combat.emitNoise(pos.x, pos.y, pos.z, spec.noise);
+    return;
+  }
+
   for (const e of enemies) {
     if (e.dead) continue;
-    const d = grenades.damageAt(pos, e.pos.x, e.pos.y + e.height * 0.5, e.pos.z);
+    const d = grenades.damageAt(pos, e.pos.x, e.pos.y + e.height * 0.5, e.pos.z, spec);
     if (d <= 0) continue;
     _blastDir.set(e.pos.x - pos.x, 0, e.pos.z - pos.z).normalize();
     const killed = e.takeDamage(d, 'torso', _blastDir);
     if (killed) {
       combat.stats.kills++;
-      effects.deathBurst(e.pos, PALETTE.threat, 8);
       combat.markBlood(e.pos);
       combat.onKill?.(e);
     }
   }
 
-  // 玩家自伤（打折，但确实会死 —— 手雷要有代价）
   if (!player.dead) {
     const selfD = grenades.damageAt(
-      pos, player.pos.x, player.pos.y + 1.0, player.pos.z
+      pos, player.pos.x, player.pos.y + 1.0, player.pos.z, spec
     );
     if (selfD > 0) {
-      const r = player.applyDamage(Math.round(selfD * GRENADE.selfDamageMul));
+      const r = player.applyDamage(Math.round(selfD * spec.selfDamageMul));
       game.damageFlash = 1;
       audio.hurt(r.armorLost > 0 && r.hpLost === 0);
       if (r.died) killPlayer();
     }
   }
 
-  // 爆炸声惊动大范围敌人
-  combat.emitNoise(pos.x, pos.y, pos.z, GRENADE.noise);
+  combat.emitNoise(pos.x, pos.y, pos.z, spec.noise);
 };
 
 function endGame(won) {
@@ -480,10 +603,10 @@ function frame(nowMs) {
         const eye = new THREE.Vector3(
           player.pos.x, player.pos.y + PLAYER.eyeHeight, player.pos.z
         ).addScaledVector(_camDir, 0.5);
-        grenades.throwFrom(eye, _camDir, true);
+        grenades.throwFrom(eye, _camDir, true, game.nadeKind);
         audio.grenadeThrow();
         syncVitalsHud();          // 手雷计数立刻更新，不等 0.35 秒采样
-        toast(`手雷 ×${game.nades}`, 900);
+        toast(`${GRENADES[game.nadeKind]?.label ?? '手雷'} ×${game.nades}`, 900);
       } else {
         toast('没有手雷了', 900);
       }
@@ -625,6 +748,14 @@ function frame(nowMs) {
     game.damageFlash = Math.max(0, game.damageFlash - dt * 2.6);
     hud.damage.style.opacity = String(game.damageFlash * 0.55);
   }
+  if (hud.flashWhite) {
+    if (game.playerFlash > 0) {
+      game.playerFlash = Math.max(0, game.playerFlash - dt / 1.2);
+      hud.flashWhite.style.opacity = String(game.playerFlash);
+    } else {
+      hud.flashWhite.style.opacity = '0';
+    }
+  }
 
   /**
    * 低血警告：生命（不含护甲）低于阈值时屏幕边缘持续红色脉冲。
@@ -659,6 +790,7 @@ function frame(nowMs) {
     hud.ammoReserve.textContent = w.reserve === Infinity ? '∞' : String(w.reserve);
     hud.weapon.textContent = w.spec.short;
     hud.weapon.style.color = `#${w.spec.color.toString(16).padStart(6, '0')}`;
+    player.rig.setGun(w.spec.id);
     if (w.reloading) {
       hud.reload.style.display = 'block';
       hud.reloadBar.style.width = `${(w.reloadProgress(now) * 100).toFixed(0)}%`;
@@ -710,6 +842,7 @@ function syncVitalsHud() {
   hud.hpBar.classList.toggle('low', player.lowHp && !player.dead);
   hud.nadeCount.textContent = String(game.nades);
   hud.nadeBox.classList.toggle('empty', game.nades === 0);
+  if (hud.nadeKind) hud.nadeKind.textContent = GRENADES[game.nadeKind]?.label ?? '手雷';
 }
 syncVitalsHud();
 

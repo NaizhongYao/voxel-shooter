@@ -56,6 +56,12 @@ const Y0 = 1;                         // 墙体 / 门洞起始格
  * 玩家出生在庭院正对这里，开局撞在关着的门上是很差的第一印象。
  */
 export const MAIN_ENTRANCE = [[31, 47], [32, 47]];
+/** 北后门：出生点在南，北墙就是后方。双开，对应北走道中段。 */
+export const BACK_ENTRANCE = [[31, 6], [32, 6]];
+/** 西侧门：与东侧门成对，从庭院绕到西储。 */
+export const SIDE_WEST = [[6, 20]];
+/** 东侧门（已有） */
+export const SIDE_EAST = [[56, 20]];
 
 /**
  * 建筑外墙：内表面 x=8..55、z=8..46。
@@ -181,8 +187,11 @@ export function buildLevel01() {
   // ---- 门与通道口 --------------------------------------------------------
   // 主入口：南外墙双开门，正对庭院出生点（开门后退进门厅，不挡通道）
   for (const [mx, mz] of MAIN_ENTRANCE) carveDoor(w, mx, mz, 'z');
-  // 东侧门：从庭院东侧绕后进东储
-  carveDoor(w, B.x1 + 1, 20, 'x');
+  // 北后门：出生点在南，北墙是后方。从北走道出到北侧外廊。
+  for (const [mx, mz] of BACK_ENTRANCE) carveDoor(w, mx, mz, 'z');
+  // 东西侧门：庭院绕侧翼进储藏间
+  for (const [mx, mz] of SIDE_WEST) carveDoor(w, mx, mz, 'x');
+  for (const [mx, mz] of SIDE_EAST) carveDoor(w, mx, mz, 'x');
 
   // 门厅 → 南侧过道（4 格宽拱门，主动线）
   carveOpening(w, 30, 36, 'x', 4, 'z');

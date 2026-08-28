@@ -15,7 +15,7 @@ export class Player {
   constructor(world, spawn) {
     this.world = world;
     this.body = new Body(spawn.x, spawn.y, spawn.z);
-    this.rig = new BlockyRig();
+    this.rig = new BlockyRig(undefined, { isPlayer: true, kit: 'player' });
     // 血量与护甲上限由难度决定（简单 120+240 / 困难 100+200 / 专家 80+120）
     this.hpMax = D().hpMax;
     this.armorMax = D().armorMax;

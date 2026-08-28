@@ -99,22 +99,24 @@ export function furnishLevel01(w, y) {
   F.picture(26, 38);
   F.picture(38, 38);
   F.carpet(29, 43, 35, 46);
-  F.rect(31, 45, 32, 45, BLOCK.TABLE);       // 玄关条桌
-  F.put(30, 45, BLOCK.CHAIR);
-  F.put(33, 45, BLOCK.CHAIR);
+  F.rect(27, 44, 28, 44, BLOCK.TABLE);       // 侧边小桌，不挡正门
+  F.put(27, 43, BLOCK.CHAIR);
   F.put(26, 46, BLOCK.LAMP);
   F.put(38, 45, BLOCK.PLANT);
+  F.put(36, 39, BLOCK.CRATE);
 
   // ══ 客厅（西南）══════════════════════════════════════════════════════
   // 沙发朝东看电视，中间地毯 + 茶几 —— 一眼能认出是客厅
   F.carpet(10, 40, 20, 45);
-  F.sofa(10, 41, 4, 'east');                 // 靠背在西侧（贴外墙）
+  F.sofa(10, 41, 5, 'east');                 // 靠背在西侧（贴外墙）
   F.put(14, 42, BLOCK.TABLE);                // 茶几
   F.put(14, 43, BLOCK.TABLE);
-  F.put(20, 42, BLOCK.TV);                   // 电视对着沙发
+  F.put(15, 42, BLOCK.TABLE);
+  F.put(20, 42, BLOCK.TV);                   // 电视对着沙发，发微光
   F.put(20, 43, BLOCK.TV);
   F.put(20, 41, BLOCK.CABINET);              // 电视柜
   F.put(9, 46, BLOCK.LAMP);                  // 落地灯（暖光锚点）
+  F.put(11, 45, BLOCK.CRATE);
   F.put(17, 46, BLOCK.BOOKSHELF);
   F.put(18, 46, BLOCK.BOOKSHELF);
   F.picture(9, 39);
@@ -143,6 +145,11 @@ export function furnishLevel01(w, y) {
   F.put(35, 17, BLOCK.LAMP);
   F.put(28, 24, BLOCK.PLANT);
   F.put(42, 18, BLOCK.BOOKSHELF);
+  F.put(24, 18, BLOCK.CRATE);
+  F.put(25, 18, BLOCK.CRATE);
+  F.put(24, 19, BLOCK.CRATE);
+  F.put(39, 22, BLOCK.CRATE);
+  F.put(40, 22, BLOCK.TABLE);
 
   // ══ 卧室（西北）══════════════════════════════════════════════════════
   F.carpet(9, 9, 17, 14);
@@ -170,8 +177,9 @@ export function furnishLevel01(w, y) {
   // ══ 北走道 ══════════════════════════════════════════════════════════
   F.put(23, 9, BLOCK.PLANT);
   F.put(42, 9, BLOCK.PLANT);
-  F.put(33, 8, BLOCK.CABINET);
   F.put(24, 13, BLOCK.LAMP);
+  F.put(26, 9, BLOCK.CRATE);
+  F.put(38, 13, BLOCK.TABLE);
 
   // ══ 储藏间（仓库两侧）══════════════════════════════════════════════
   F.put(8, 17, BLOCK.WARDROBE);
@@ -203,4 +211,6 @@ export function furnishLevel01(w, y) {
   F.put(26, 56, BLOCK.CHAIR);
   F.put(27, 56, BLOCK.TABLE);
   F.put(38, 55, BLOCK.PLANT);
+  F.put(29, 55, BLOCK.CRATE);
+  F.put(36, 54, BLOCK.CRATE);
 }

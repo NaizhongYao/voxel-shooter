@@ -1,7 +1,7 @@
 import { ARCHETYPE } from '../systems/enemy.js';
 
 /**
- * 12 个敌人的布置（GDD 12 章 + 10 章关卡规则）。
+ * 12 个敌人的出生点池（GDD 12 章 + 10 章关卡规则）。
  *
  * 规则 4：约一半敌人初始朝向背对最近的门，奖励从正确方向进入的玩家。
  *
@@ -11,7 +11,29 @@ import { ARCHETYPE } from '../systems/enemy.js';
  * 每个坐标都落在房间净空的中心（.5 偏移），且离墙至少 1.5 vox ——
  * 敌人绝不会在出生瞬间就卡在墙里。Enemy 构造函数还会做一次脱困兜底。
  *
- * 分布：伏击者 4（黑暗转角）· 蹲守者 5（封锁门口/走廊）· 巡逻者 3
+ * ══ 数量按难度分层（tier），不是简单地改血量 ══
+ *
+ * 敌人数量本身也是难度的一部分：找遍全楼却只找到几个人，跟找到十几个
+ * 完全是两种紧张感。每个敌人标一个 tier（1/2/3），main.js 按
+ * `D().enemyTier` 过滤出当前难度要生成的子集：
+ *
+ *   tier 1（简单 7 人）：核心布置，覆盖 6 个以上房间，伏击/巡逻比例
+ *                        与原版一致，保证「找得到、打得过」。
+ *   tier 2（困难 10 人）：追加 3 人，补上主走廊与仓库的纵深火力。
+ *   tier 3（专家 12 人）：追加 2 人，全楼铺满，含庭院教学区的巡逻者。
+ *
+ * 分层是手工挑选、不是随机抽取 —— 随机会导致同一难度下每局房间覆盖度
+ * 不一样（可能巡逻者全挤在一个区域），无法保证空间分布，也没法写死
+ * 测试断言。tier 越高只是「追加」，不移除 tier 1 的任何一个，所以专家
+ * 难度下永远是完整的 12 人池子。
+ *
+ * ══ 武装敌人（armored）══
+ *
+ * 挑了 3 个持 AR/DMR 的巡逻者标记 `armored: true`：护甲吸收大部分伤害
+ * （见 config.ARMOR_ABSORB / ARMOR_MAX），视觉上在方块躯干外挂一层
+ * 深灰护甲壳（见 player/rig.js BlockyRig 的 armored 选项）。他们全部
+ * 是 tier 1 就存在的敌人，所以任何难度下武装敌人的数量单调递增：
+ * 简单 1 个 · 困难 2 个 · 专家 3 个。
  */
 
 const Y1 = 1;
@@ -47,65 +69,86 @@ export const ENEMY_SPAWNS = [
   // 庭院刻意留空：出生点附近不放任何敌人。
   // 玩家一进游戏就被秒杀不是紧张，只是挫败。
 
-  // ── 门厅（进门第一个房间：一个伏击者教玩家「先看角落」）──
-  { x: 28.5, y: Y1, z: 41.5, yaw: Math.PI, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun' },
+  // ── 门厅（进门第一个房间：一个伏击者教玩家「先看角落」）── tier 1
+  { x: 28.5, y: Y1, z: 41.5, yaw: Math.PI, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun', tier: 1 },
 
   // ── 客厅（西南）：绕房间一圈的巡逻者 + 一个伏击者 ──
+  // 巡逻者 tier 2（困难/专家追加），伏击者 tier 1（三档都会遇到）。
   {
     x: 11.5, y: Y1, z: 38.5, yaw: 0,
-    archetype: ARCHETYPE.PATROLLER, weapon: 'smg',
+    archetype: ARCHETYPE.PATROLLER, weapon: 'smg', tier: 2,
     patrol: [[11.5, 38.5], [21.5, 38.5], [21.5, 45.5], [11.5, 45.5]],
   },
-  { x: 20.5, y: Y1, z: 40.5, yaw: Math.PI / 2, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun' },
+  { x: 20.5, y: Y1, z: 40.5, yaw: Math.PI / 2, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun', tier: 1 },
 
-  // ── 厨房（东南）──
-  { x: 46.5, y: Y1, z: 45.5, yaw: 0, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun' },
+  // ── 厨房（东南）── tier 3：专家难度才追加的第二个伏击者，
+  // 与下方的武装巡逻者形成南翼的双重威胁。
+  { x: 46.5, y: Y1, z: 45.5, yaw: 0, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun', tier: 3 },
   {
     x: 43.5, y: Y1, z: 38.5, yaw: Math.PI,
-    archetype: ARCHETYPE.PATROLLER, weapon: 'ar',
+    // 武装巡逻者：AR + 护甲。tier 1 就存在——三个难度都会遇到的
+    // 「武装敌人数量随难度递增」里最先出现的那一个（简单档唯一的武装敌人）。
+    archetype: ARCHETYPE.PATROLLER, weapon: 'ar', tier: 1, armored: true,
     patrol: [[43.5, 38.5], [53.5, 38.5], [53.5, 45.5], [43.5, 45.5]],
   },
 
-  // ── 主走廊（净空 z=27..30，被墙垛切成三段）──
+  // ── 主走廊（净空 z=27..30，被墙垛切成三段）── tier 1
   // 两个巡逻者分守东西两段，路线不跨越墙垛
   {
     x: 10.5, y: Y1, z: 27.5, yaw: -Math.PI / 2,
-    archetype: ARCHETYPE.PATROLLER, weapon: 'smg',
+    archetype: ARCHETYPE.PATROLLER, weapon: 'smg', tier: 1,
     patrol: [[10.5, 27.5], [20.5, 27.5], [20.5, 30.5], [10.5, 30.5]],
   },
   {
     x: 43.5, y: Y1, z: 27.5, yaw: Math.PI / 2,
-    archetype: ARCHETYPE.PATROLLER, weapon: 'dmr',
+    // 武装巡逻者：DMR + 护甲。tier 3——只有专家难度才会在走廊东段
+    // 遇到这个隔着长视线点杀的护甲敌人，是三个武装敌人里最危险的一个，
+    // 留给最高难度。
+    archetype: ARCHETYPE.PATROLLER, weapon: 'dmr', tier: 3, armored: true,
     patrol: [[43.5, 27.5], [53.5, 27.5], [53.5, 30.5], [43.5, 30.5]],
   },
 
-  // ── 南侧过道（z=33..35）：横穿半栋楼的长巡逻，最容易撞见玩家 ──
+  // ── 南侧过道（z=33..35）：横穿半栋楼的长巡逻，最容易撞见玩家 ── tier 1
   {
     x: 10.5, y: Y1, z: 33.5, yaw: -Math.PI / 2,
-    archetype: ARCHETYPE.PATROLLER, weapon: 'ar',
+    archetype: ARCHETYPE.PATROLLER, weapon: 'ar', tier: 1,
     patrol: [[10.5, 33.5], [26.5, 33.5], [26.5, 35.5], [10.5, 35.5]],
   },
 
   // ── 北侧仓库（大空间 + 掩体）──
+  // 武装巡逻者 tier 2（困难/专家追加：仓库是最大房间，武装敌人在这里
+  // 有更多掩体可以周旋，符合仓库「高潮区域」的定位）；
+  // 伏击者 tier 1（简单难度就要教玩家「仓库黑暗角落也要照」）。
   {
     x: 27.5, y: Y1, z: 19.5, yaw: 0,
-    archetype: ARCHETYPE.PATROLLER, weapon: 'ar',
+    archetype: ARCHETYPE.PATROLLER, weapon: 'ar', tier: 2, armored: true,
     patrol: [[27.5, 19.5], [42.5, 19.5], [42.5, 22.5], [27.5, 22.5]],
   },
-  { x: 40.5, y: Y1, z: 17.5, yaw: Math.PI / 2, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun' },
+  { x: 40.5, y: Y1, z: 17.5, yaw: Math.PI / 2, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun', tier: 1 },
 
-  // ── 卧室（西北）/ 书房（东北）──
+  // ── 卧室（西北）── tier 1：简单难度也要覆盖到北翼
   {
     x: 12.5, y: Y1, z: 8.5, yaw: Math.PI,
-    archetype: ARCHETYPE.PATROLLER, weapon: 'smg',
+    archetype: ARCHETYPE.PATROLLER, weapon: 'smg', tier: 1,
     patrol: [[12.5, 8.5], [18.5, 8.5], [18.5, 14.5], [12.5, 14.5]],
   },
+  // ── 书房（东北）── tier 2：困难/专家才追加，作为北翼的纵深补充
   {
     x: 46.5, y: Y1, z: 8.5, yaw: Math.PI,
-    archetype: ARCHETYPE.PATROLLER, weapon: 'pistol',
+    archetype: ARCHETYPE.PATROLLER, weapon: 'pistol', tier: 2,
     patrol: [[46.5, 8.5], [52.5, 8.5], [52.5, 14.5], [46.5, 14.5]],
   },
 ];
+
+/**
+ * 敌人数量随难度：简单/困难/专家分别应该看到多少个。测试与文案共用。
+ *
+ * tier 分配核实过的关键属性（每档独立成立，不是只看累积总量）：
+ *   简单（tier1，7人）：伏击者3 · 巡逻者4 · 武装1 · 覆盖 7 个房间
+ *   困难（tier≤2，10人）：伏击者3 · 巡逻者7 · 武装2 · 覆盖 8 个房间
+ *   专家（tier≤3，12人）：伏击者4 · 巡逻者8 · 武装3 · 覆盖 8 个房间
+ */
+export const ENEMY_COUNT_BY_TIER = { 1: 7, 2: 10, 3: 12 };
 
 /** 医疗包：全关仅 3 个，固定位置，敌人不掉落 */
 export const MEDKIT_SPAWNS = [

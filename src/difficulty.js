@@ -50,6 +50,13 @@ export const DIFFICULTIES = {
     showIdleIndicator: true,
     /** 是否显示敌人朝向的视野提示 */
     showFacingHint: true,
+
+    /**
+     * 敌人数量层级：ENEMY_SPAWNS 里 tier <= enemyTier 的敌人才会生成。
+     * 简单 7 / 困难 10 / 专家 12 —— 数量本身也是难度的一部分，而不只是
+     * 血量/反应时间。人少的关卡才配得上「适合熟悉操作」。
+     */
+    enemyTier: 1,
   },
 
   hard: {
@@ -77,6 +84,8 @@ export const DIFFICULTIES = {
     indicatorRange: 28,
     showIdleIndicator: false,    // 只有被注意到才显示
     showFacingHint: false,
+
+    enemyTier: 2,
   },
 
   expert: {
@@ -104,6 +113,8 @@ export const DIFFICULTIES = {
     indicatorRange: 14,          // 只有很近才看得到状态
     showIdleIndicator: false,
     showFacingHint: false,
+
+    enemyTier: 3,
   },
 };
 

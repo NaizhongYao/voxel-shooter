@@ -11,7 +11,7 @@ import { PALETTE, PLAYER } from '../config.js';
  */
 export const WEAPONS = {
   pistol: {
-    id: 'pistol', name: 'M19 手枪', short: 'M19',
+    id: 'pistol', name: 'M19 消音', short: 'M19',
     color: PALETTE.pistol ?? 0x9aa7b8,
     damage: 26, rof: 4, auto: false,
     spread: 2.0, mag: 12, reload: 1.0,
@@ -21,6 +21,19 @@ export const WEAPONS = {
     recoil: { kick: 0.45, climb: 1.5, shake: 0.16 },
     muzzleScale: 0.34, tracer: 0.5,
     sound: 'light',
+    slot: 1,
+  },
+  pistolFast: {
+    id: 'pistolFast', name: 'M19C 快射', short: 'M19C',
+    color: 0xc9d4de,
+    damage: 22, rof: 8, auto: false,
+    spread: 3.2, mag: 15, reload: 1.1,
+    range: 24, pierce: 1, noise: 36,
+    reserve: Infinity,
+    pellets: 1,
+    recoil: { kick: 0.38, climb: 2.0, shake: 0.18 },
+    muzzleScale: 0.38, tracer: 0.55,
+    sound: 'medium',
     slot: 1,
   },
   smg: {
@@ -163,14 +176,21 @@ export class WeaponInstance {
  *  槽2 = 拾取的主武器
  */
 export class Loadout {
-  constructor() {
-    this.slots = [new WeaponInstance(WEAPONS.pistol), null];
+  constructor({ pistolId = 'pistol' } = {}) {
+    const pistol = WEAPONS[pistolId] ?? WEAPONS.pistol;
+    this.slots = [new WeaponInstance(pistol), null];
     this.active = 0;
     this.switchUntil = 0;
   }
 
   get current() { return this.slots[this.active]; }
   get switching() { return performance.now() / 1000 < this.switchUntil; }
+
+  setPistol(pistolId) {
+    const pistol = WEAPONS[pistolId] ?? WEAPONS.pistol;
+    this.slots[0] = new WeaponInstance(pistol);
+    if (this.active === 0) this.switchUntil = 0;
+  }
 
   switchTo(idx, now) {
     if (idx === this.active || !this.slots[idx]) return false;

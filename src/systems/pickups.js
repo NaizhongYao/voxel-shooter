@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { PALETTE, PLAYER } from '../config.js';
 import { D } from '../difficulty.js';
 import { WEAPONS } from './weapons.js';
+import { buildGunModel } from './gunmesh.js';
 
 /**
  * 掉落物：缓慢自转 + 上下浮动的 0.4 vox 小方块。
@@ -28,11 +29,12 @@ export class Pickup {
       kind === KIND.AMMO   ? PALETTE.cyan :
       payload.weapon === 'dmr' ? PALETTE.purple : PALETTE.amber;
 
-    // MeshBasic：掉落物在全黑房间里也要能被看到一点点，否则玩家永远找不到
-    this.mesh = new THREE.Mesh(BOX, new THREE.MeshLambertMaterial({
-      color, emissive: color,
-    }));
-    this.mesh.material = new THREE.MeshLambertMaterial({ color });
+    if (kind === KIND.WEAPON) {
+      this.mesh = buildGunModel(payload.weapon || 'pistol');
+      this.mesh.rotation.x = 0.15;
+    } else {
+      this.mesh = new THREE.Mesh(BOX, new THREE.MeshLambertMaterial({ color }));
+    }
     this.mesh.position.copy(this.pos);
     this.mesh.castShadow = false;
     scene.add(this.mesh);
@@ -41,15 +43,19 @@ export class Pickup {
 
   update(dt, t) {
     if (this.taken) return;
-    this.mesh.rotation.y += dt * 1.6;
-    this.mesh.rotation.x += dt * 0.5;
-    this.mesh.position.y = this.baseY + Math.sin(t * 2 + this.phase) * 0.09;
+    if (this.kind === KIND.WEAPON) {
+      this.mesh.rotation.y += dt * 0.9;
+      this.mesh.position.y = this.baseY + Math.sin(t * 1.6 + this.phase) * 0.04;
+    } else {
+      this.mesh.rotation.y += dt * 1.6;
+      this.mesh.rotation.x += dt * 0.5;
+      this.mesh.position.y = this.baseY + Math.sin(t * 2 + this.phase) * 0.09;
+    }
   }
 
   take() {
     this.taken = true;
     this.scene.remove(this.mesh);
-    this.mesh.material.dispose();
   }
 }
 
