@@ -84,6 +84,10 @@ const hud = {
   nadeKind: $('nade-kind'), flashWhite: $('flash-white'),
   missions: $('missions'), msGrid: $('ms-grid'), mapFull: $('map-full'),
   minimap: $('minimap'), mmBox: $('mm-box'), mmHere: $('mm-here'),
+  msGun: $('ms-gun'), msNade: $('ms-nade'),
+  msGunArt: $('ms-gun-art'), msNadeArt: $('ms-nade-art'),
+  msGunName: $('ms-gun-name'), msNadeName: $('ms-nade-name'),
+  msGunD: $('ms-gun-d'), msNadeD: $('ms-nade-d'),
 };
 // 调试面板（FPS/POS/SHOTS/HITS…）默认隐藏，反引号切换（见下方 input.justPressed('debug')）。
 // 不在 HTML 里写死 display:none，是因为面板同时也是 boot 信息的容器；
@@ -153,22 +157,41 @@ flashPool.setVisibilityProbe((x, y, z) => {
 });
 const effects = new Effects(scene, world);
 const input = new Input(canvas);
+const START_GUNS = ['pistol', 'pistolFast', 'smg'];
+const START_GUN_INFO = {
+  pistol:     { name: 'M19 消音',   hint: '左键点射 · 噪音低 · 开局即持' },
+  pistolFast: { name: 'M19C 快射', hint: '左键连点 · 更响 · 开局即持' },
+  smg:        { name: 'MP7 冲锋枪', hint: '左键全自动 · 近距离清房 · 开局即持' },
+};
+
 function readLoadoutChoice() {
   try {
     const raw = JSON.parse(sessionStorage.getItem('loadoutChoice') || '{}');
+    const gun = START_GUNS.includes(raw.gun)
+      ? raw.gun
+      : (raw.pistol === 'pistolFast' ? 'pistolFast' : 'pistol');
     return {
-      pistol: raw.pistol === 'pistolFast' ? 'pistolFast' : 'pistol',
+      gun,
+      pistol: gun === 'smg'
+        ? (raw.pistol === 'pistolFast' ? 'pistolFast' : 'pistol')
+        : gun,
+      primary: gun === 'smg' ? 'smg' : null,
       nade: raw.nade === 'he' ? 'he' : 'flash',
     };
   } catch {
-    return { pistol: 'pistol', nade: 'flash' };
+    return { gun: 'pistol', pistol: 'pistol', primary: null, nade: 'flash' };
   }
 }
 function saveLoadoutChoice(choice) {
   sessionStorage.setItem('loadoutChoice', JSON.stringify(choice));
 }
 const loadoutChoice = readLoadoutChoice();
-const loadout = new Loadout({ pistolId: loadoutChoice.pistol });
+const loadout = new Loadout({
+  pistolId: loadoutChoice.pistol,
+  primaryId: loadoutChoice.primary,
+});
+player.rig.setGun(loadout.current.id);
+player.rig.setGrenade(loadoutChoice.nade);
 
 // 敌人数量按难度分层：简单 tier<=1，困难 tier<=2，专家全部。
 // 简报里的「X 人」和这里用的是同一个 countEnemies —— 数字永远一致。
@@ -231,6 +254,13 @@ hud.minimap.classList.add('off');
 
 /** 玩家箭头跟位置与朝向走。上为北（−Z），所以 yaw=0 时箭头指向正上。 */
 function updateMinimap() {
+  /**
+   * 探索记录必须先做、且不受 minimapOn 影响 —— 小地图被 TAB 收起时
+   * 玩家仍在推进，重新打开时该亮的房间必须已经亮着。
+   */
+  const id = roomAt(LEVEL, player.pos.x, player.pos.z);
+  if (id) markRoomSeen(id);
+
   if (!minimapOn) return;
   const arrow = hud.mmBox?.querySelector('.mm-player');
   if (!arrow) return;
@@ -239,11 +269,24 @@ function updateMinimap() {
     'transform',
     `translate(${player.pos.x.toFixed(2)} ${player.pos.z.toFixed(2)}) rotate(${deg.toFixed(1)})`
   );
-  const id = roomAt(LEVEL, player.pos.x, player.pos.z);
   if (id !== mmHereId) {
     mmHereId = id;
     if (hud.mmHere) hud.mmHere.textContent = id ? (LEVEL.roomLabels?.[id] ?? id) : '室外';
   }
+}
+
+/**
+ * 标记房间为「已探索」：小地图上亮起来并显示名字。
+ *
+ * 探索集合独立于 minimapOn —— 小地图被 TAB 收起时玩家仍在探索，
+ * 重新打开时该亮的房间必须已经是亮的。
+ */
+const seenRooms = new Set();
+function markRoomSeen(id) {
+  if (seenRooms.has(id)) return;
+  seenRooms.add(id);
+  hud.mmBox?.querySelector(`.mm-room[data-room="${id}"]`)?.classList.add('seen');
+  hud.mmBox?.querySelector(`.mm-label[data-label="${id}"]`)?.classList.add('seen');
 }
 
 // ── Game state ─────────────────────────────────────────────────────────────
@@ -286,7 +329,10 @@ function buildMissionCards() {
   if (!grid) return;
   grid.innerHTML = '';
   msCards.length = 0;
-  const entries = [...LEVELS, { future: true, code: '03', name: '未解密', en: 'PROTOCOL ??' }];
+  // 占位卡编号跟着已登记关卡数走 —— 写死 '03' 的话，新加一关就会出现
+  // 两张「03」（真关卡 03 与占位 03 并排）。
+  const nextCode = String(LEVELS.length + 1).padStart(2, '0');
+  const entries = [...LEVELS, { future: true, code: nextCode, name: '未解密', en: 'PROTOCOL ??' }];
   entries.forEach((lv, i) => {
     const el = document.createElement('div');
     el.className = 'ms-card' + (lv.locked ? ' locked' : '') + (lv.future ? ' future' : '');
@@ -422,6 +468,7 @@ function buildDifficultyCards() {
       // 任务选择屏的卡片也报敌人数 —— 换难度后必须跟着重算，
       // 否则返回选择屏会看到旧难度的人数（就是这类不一致的老毛病）。
       buildMissionCards();
+      drawMissionKit();
     });
     hud.diffs.appendChild(el);
   }
@@ -466,29 +513,75 @@ showBriefPage(0);
 hud.briefPrev?.addEventListener('click', () => showBriefPage(briefPage - 1));
 hud.briefNext?.addEventListener('click', () => showBriefPage(briefPage + 1));
 
+function setStartGun(id) {
+  loadoutChoice.gun = START_GUNS.includes(id) ? id : 'pistol';
+  if (loadoutChoice.gun === 'smg') {
+    loadoutChoice.primary = 'smg';
+    if (loadoutChoice.pistol !== 'pistolFast') loadoutChoice.pistol = 'pistol';
+  } else {
+    loadoutChoice.pistol = loadoutChoice.gun;
+    loadoutChoice.primary = null;
+  }
+  saveLoadoutChoice(loadoutChoice);
+  markLoadoutCards();
+  applyLoadoutLive();
+}
+
+function setStartNade(id) {
+  loadoutChoice.nade = id === 'he' ? 'he' : 'flash';
+  saveLoadoutChoice(loadoutChoice);
+  markLoadoutCards();
+  applyLoadoutLive();
+}
+
+function cycleStartGun() {
+  const i = Math.max(0, START_GUNS.indexOf(loadoutChoice.gun));
+  setStartGun(START_GUNS[(i + 1) % START_GUNS.length]);
+}
+
+function cycleStartNade() {
+  setStartNade(loadoutChoice.nade === 'he' ? 'flash' : 'he');
+}
+
 function markLoadoutCards() {
-  document.querySelectorAll('[data-pistol]').forEach((el) => {
+  document.querySelectorAll('.lcard[data-gun]').forEach((el) => {
+    el.classList.toggle('on', el.dataset.gun === loadoutChoice.gun);
+  });
+  document.querySelectorAll('.lcard[data-pistol]').forEach((el) => {
+    if (el.dataset.gun) return;
     el.classList.toggle('on', el.dataset.pistol === loadoutChoice.pistol);
   });
-  document.querySelectorAll('[data-nade]').forEach((el) => {
+  document.querySelectorAll('.lcard[data-nade]').forEach((el) => {
     el.classList.toggle('on', el.dataset.nade === loadoutChoice.nade);
   });
 }
+
+function applyLoadoutLive() {
+  loadout.setPistol(loadoutChoice.pistol);
+  loadout.setPrimary(loadoutChoice.primary, 0);
+  player.rig.setGun(loadout.current.id);
+  player.rig.setGrenade(loadoutChoice.nade);
+  game.nadeKind = loadoutChoice.nade;
+  game.nades = grenadeInventory(
+    loadoutChoice.nade, (DIFFICULTIES[pendingDiff] ?? D()).grenades
+  );
+  syncVitalsHud();
+  drawMissionKit();
+}
+
 markLoadoutCards();
-document.querySelectorAll('[data-pistol]').forEach((el) => {
-  el.addEventListener('click', () => {
-    loadoutChoice.pistol = el.dataset.pistol;
-    saveLoadoutChoice(loadoutChoice);
-    markLoadoutCards();
-  });
+document.querySelectorAll('.lcard[data-gun]').forEach((el) => {
+  el.addEventListener('click', () => setStartGun(el.dataset.gun));
 });
-document.querySelectorAll('[data-nade]').forEach((el) => {
-  el.addEventListener('click', () => {
-    loadoutChoice.nade = el.dataset.nade;
-    saveLoadoutChoice(loadoutChoice);
-    markLoadoutCards();
-  });
+document.querySelectorAll('.lcard[data-pistol]').forEach((el) => {
+  if (el.dataset.gun) return;
+  el.addEventListener('click', () => setStartGun(el.dataset.pistol));
 });
+document.querySelectorAll('.lcard[data-nade]').forEach((el) => {
+  el.addEventListener('click', () => setStartNade(el.dataset.nade));
+});
+hud.msGun?.addEventListener('click', (e) => { e.stopPropagation(); cycleStartGun(); });
+hud.msNade?.addEventListener('click', (e) => { e.stopPropagation(); cycleStartNade(); });
 
 /**
  * 武器页的图形：方块风格的枪廓形 + 三段属性条（伤害/射速/噪音）。
@@ -571,6 +664,26 @@ function drawLoadoutVisuals() {
 }
 drawLoadoutVisuals();
 
+/** 任务选择第一屏的枪 / 雷卡片，和简报第四页、进游戏装备同源。 */
+function drawMissionKit() {
+  const gun = loadoutChoice.gun;
+  const info = START_GUN_INFO[gun] ?? START_GUN_INFO.pistol;
+  const w = WEAPONS[gun];
+  const c = w ? '#' + w.color.toString(16).padStart(6, '0') : '#9aa7b8';
+  const art = GUN_ART[gun] ?? GUN_ART.pistol;
+  if (hud.msGunArt) hud.msGunArt.innerHTML = `<svg viewBox="0 0 120 40">${art(c)}</svg>`;
+  if (hud.msGunName) hud.msGunName.textContent = info.name;
+  if (hud.msGunD) hud.msGunD.textContent = info.hint;
+
+  const nade = loadoutChoice.nade;
+  const nSpec = GRENADES[nade] ?? GRENADES.flash;
+  const nCount = grenadeInventory(nade, (DIFFICULTIES[pendingDiff] ?? D()).grenades);
+  if (hud.msNadeArt) hud.msNadeArt.innerHTML = `<svg viewBox="0 0 120 40">${NADE_ART[nade]?.(nade) ?? ''}</svg>`;
+  if (hud.msNadeName) hud.msNadeName.textContent = nSpec.id === 'he' ? '高爆弹' : '闪光弹';
+  if (hud.msNadeD) hud.msNadeD.textContent = `按 3 投掷 · ×${nCount}`;
+}
+drawMissionKit();
+
 /** 简报标题 / 目标文案跟着所选关卡走 */
 function fillBriefTexts() {
   const sub = document.getElementById('brief-sub');
@@ -594,8 +707,11 @@ function startMission() {
     return;
   }
   loadout.setPistol(loadoutChoice.pistol);
+  loadout.setPrimary(loadoutChoice.primary, 0);
   game.nadeKind = loadoutChoice.nade;
   game.nades = grenadeInventory(game.nadeKind, D().grenades);
+  player.rig.setGun(loadout.current.id);
+  player.rig.setGrenade(game.nadeKind);
   game.started = true;
   // 跳简报（R 重开）路径也会走到这里 —— 任务选择屏同样要关掉，
   // 否则游戏已经在跑了，选择屏还盖在上面挡视线挡点击。
@@ -733,6 +849,19 @@ combat.onKill = (enemy) => {
  */
 // 敌人枪声：按距离衰减。远处的交火声是玩家判断「那边有人」的重要情报。
 combat.onEnemyShot = (spec, dist) => audio.shoot(spec.sound ?? 'medium', dist);
+
+/**
+ * 子弹打到门：累计伤害，打烂后门洞永久畅通。
+ * 网格被改动了，所以要重建受影响的区块（mesher 每帧末会跑 rebuildDirty）。
+ */
+combat.onDoorHit = (gx, gy, gz, dmg) => {
+  const door = doors.atCell(gx, gz);
+  if (!door) return;
+  if (door.damage(dmg)) {
+    audio.door(true);
+    toast('门被打烂了', 900);
+  }
+};
 
 grenades.onExplode = (pos, ownerIsPlayer, spec = GRENADE) => {
   const dist = Math.hypot(pos.x - player.pos.x, pos.z - player.pos.z);
@@ -994,7 +1123,8 @@ function frame(nowMs) {
     }
 
     // ── 敌人 ──
-    const ctx = { player, flashlight, combat, enemies };
+    // doors 传给敌人：搜房时会自己推门进出（见 Enemy.tryOpenDoor）
+    const ctx = { player, flashlight, combat, enemies, doors };
     for (const e of enemies) e.update(dt, now, ctx);
     // 实体碰撞：敌人之间、敌人与玩家都不能重叠
     for (const e of enemies) {

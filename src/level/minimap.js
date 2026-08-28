@@ -76,7 +76,18 @@ export function renderMinimapSvg(level) {
     );
   }
 
-  // 房间块 + 房间名。房间是小地图唯一的「内容」——没有家具、没有敌人。
+  /**
+   * 房间块 + 房间名。房间是小地图唯一的「内容」——没有家具、没有敌人。
+   *
+   * ══ 探索状态 ══
+   *
+   * 所有房间初始都是 `.mm-room`（未探索：暗、无名字）。玩家走进去之后
+   * main.js 给它加 `.seen`，房间才亮起来并显示名字。
+   * 这样小地图从「一张全知平面图」变成「一张边走边画的地图」——
+   * 玩家能一眼看出哪几间还没清过，收尾找人不再靠记忆。
+   *
+   * 房间名同样只在探索后显示（预先摆好名字等于泄露了楼里有什么）。
+   */
   for (const [id, r] of Object.entries(level.rooms ?? {})) {
     const rw = r.x1 - r.x0 + 1 - ROOM_INSET * 2;
     const rh = r.z1 - r.z0 + 1 - ROOM_INSET * 2;
@@ -88,8 +99,8 @@ export function renderMinimapSvg(level) {
     // 窄房间放不下横排文字就不放 —— 宁可少一个名字，也不要糊成一团
     if (rw >= 5 && rh >= 3.2) {
       parts.push(
-        `<text class="mm-label" x="${cx.toFixed(2)}" y="${(cz + 0.9).toFixed(2)}">` +
-        `${labels[id] ?? id}</text>`
+        `<text class="mm-label" data-label="${id}" x="${cx.toFixed(2)}" ` +
+        `y="${(cz + 0.9).toFixed(2)}">${labels[id] ?? id}</text>`
       );
     }
   }

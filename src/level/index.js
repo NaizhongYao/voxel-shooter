@@ -5,6 +5,11 @@ import {
 } from './level02.js';
 import { ENEMY_SPAWNS, MEDKIT_SPAWNS, WEAPON_SPAWNS } from './spawns.js';
 import { ENEMY_SPAWNS02, MEDKIT_SPAWNS02, WEAPON_SPAWNS02 } from './spawns02.js';
+import {
+  buildLevel03, SPAWN as SPAWN03, DOORS as DOORS03, MAIN_ENTRANCE as MAIN_ENTRANCE03,
+  ROOMS as ROOMS03, BUILDING as BUILDING03,
+} from './level03.js';
+import { ENEMY_SPAWNS03, MEDKIT_SPAWNS03, WEAPON_SPAWNS03 } from './spawns03.js';
 
 /**
  * 关卡注册表：所有地图在这里挂号。
@@ -66,6 +71,29 @@ export const LEVELS = [
       staff: '值班休息', waiting: '候诊', examA: '诊室A', examB: '诊室B',
       records: '档案接待', isolation: '隔离病房', lab: '化验室',
       or: '手术室', morgue: '停尸房', duty: '值夜',
+    },
+  },
+  {
+    id: 'radio',
+    code: '03',
+    name: '废弃电台',
+    en: 'PROTOCOL 03 · RADIO STATION',
+    subtitle: '十字四翼 · 北庭院进入',
+    blurb: '四翼夹一个中庭，四角见天。正门在北，也可以从凹角绕进任意一翼。',
+    locked: false,
+    build: buildLevel03,
+    spawns: ENEMY_SPAWNS03,
+    medkits: MEDKIT_SPAWNS03,
+    weapons: WEAPON_SPAWNS03,
+    spawn: SPAWN03,
+    doors: DOORS03,
+    mainEntrance: MAIN_ENTRANCE03,
+    rooms: ROOMS03,
+    building: BUILDING03,
+    roomLabels: {
+      control: '导播', studio: '演播厅', dorm: '宿舍', canteen: '食堂',
+      atrium: '中庭', txroom: '发射机房', storeroom: '器材库',
+      generator: '发电机', mainframe: '主机房',
     },
   },
 ];

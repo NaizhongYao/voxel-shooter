@@ -52,6 +52,8 @@ const DOOR_THICK = 0.14;
 const OPEN_ANGLE = Math.PI / 2;
 const OPEN_TIME = 0.35;          // 推门耗时
 const DOOR_H = 2;
+/** 门的耐久（累计伤害）。见 Door.damage —— 打烂后门洞永久畅通。 */
+export const DOOR_HP = 120;
 /**
  * 门板沿薄轴放在门格正中央（0.5 = 格心）。
  *
@@ -80,6 +82,13 @@ export class Door {
     this.gx = spec.x; this.gy = spec.y; this.gz = spec.z;
     this.open = false;
     this.anim = 0;               // 0=关 1=开
+    /**
+     * 门的耐久。打烂之后永久变成通路（见 damage / destroy）。
+     * 120 ≈ 霰弹两发贴脸、AR 一个短点射 —— 破门要付出噪音代价，
+     * 但不至于让「打门」变成需要打空一个弹匣的苦工。
+     */
+    this.hp = DOOR_HP;
+    this.destroyed = false;
 
     /**
      * 门洞贯穿方向。关卡打洞时就知道方向，直接传过来比事后从网格反推可靠
@@ -162,6 +171,38 @@ export class Door {
     return out;
   }
 
+  /**
+   * 挨枪：累计伤害到 DOOR_HP 后整扇门被打烂。
+   *
+   * 打烂的门永久变成通路（门板从场景移除、格子清空），所以：
+   *  · 霰弹轰门是一个合法的破门方式（噪音巨大，代价是惊动整层）
+   *  · 敌人把门关上堵路不再是死局
+   *  · 交火中被流弹打坏的门会自己变成新的射界，房间形状是会变的
+   *
+   * @returns 这一击是否把门打烂了
+   */
+  damage(amount) {
+    if (this.destroyed) return false;
+    this.hp -= amount;
+    if (this.hp > 0) return false;
+    this.destroy();
+    return true;
+  }
+
+  /** 门被打烂：移除门板几何 + 清空网格，变成永久通路 */
+  destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.open = true;               // 语义上等同「永远开着」
+    this.anim = 1;
+    this.applyBlocking(false);      // 网格清空（保留门框标记）
+    for (const leaf of this.leaves) {
+      leaf.pivot.removeFromParent?.();
+      leaf.mesh.geometry?.dispose?.();
+    }
+    this.leaves = [];
+  }
+
   /** 没有 through 信息时，从两侧墙体反推门洞方向 */
   inferThrough() {
     const w = this.world;
@@ -232,6 +273,8 @@ export class Door {
 
   /** 显式设定开关状态（关卡初始化时用来把主入口预先打开） */
   setOpen(open) {
+    // 打烂的门没有门板可关 —— 强行写回实心方块会凭空出现一堵隐形墙
+    if (this.destroyed) return true;
     this.open = open;
     // 开门瞬间就解除遮挡（不等动画播完），否则会「看得见但打不过去」
     this.applyBlocking(!open);
@@ -320,10 +363,25 @@ export class DoorManager {
   nearest(px, py, pz, maxDist = 2.0) {
     let best = null, bestD = maxDist;
     for (const d of this.doors) {
+      if (d.destroyed) continue;      // 打烂的门没有交互意义
       const dist = d.distanceTo(px, py, pz);
       if (dist < bestD) { bestD = dist; best = d; }
     }
     return best;
+  }
+
+  /**
+   * 按格坐标找门。子弹命中 BLOCK.DOOR 时用它定位是哪一扇 ——
+   * 宽门洞（span>1）的任意一格都要能查到同一扇门。
+   */
+  atCell(x, z) {
+    for (const d of this.doors) {
+      if (d.destroyed) continue;
+      for (const c of d.cells()) {
+        if (c.x === x && c.z === z) return d;
+      }
+    }
+    return null;
   }
 
   /**

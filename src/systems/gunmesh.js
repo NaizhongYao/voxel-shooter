@@ -73,6 +73,24 @@ export function buildGunModel(weaponId = 'pistol') {
   return root;
 }
 
+/**
+ * 手雷外形：闪光浅灰、高爆橄榄。挂在角色背心与 UI 预览共用，
+ * 玩家才能从第一屏认到「进游戏按 3 扔的就是这一颗」。
+ */
+export function buildGrenadeModel(kind = 'flash') {
+  const root = new THREE.Group();
+  root.name = `nade-${kind}`;
+  const body = kind === 'he' ? 0x4a5a3a : 0xd8dee8;
+  const cap = kind === 'he' ? 0x2a3322 : 0x8b93a3;
+  box(root, { x: 0.16, y: 0.20, z: 0.16 }, body, { x: 0, y: 0, z: 0 });
+  box(root, { x: 0.08, y: 0.06, z: 0.08 }, cap, { x: 0, y: 0.13, z: 0 });
+  box(root, { x: 0.14, y: 0.03, z: 0.04 }, 0x2a3038, { x: 0.08, y: 0.12, z: 0 });
+  if (kind === 'flash') {
+    box(root, { x: 0.05, y: 0.05, z: 0.05 }, 0xffffff, { x: 0, y: 0.04, z: 0.10 });
+  }
+  return root;
+}
+
 export function buildMedkitModel() {
   const root = new THREE.Group();
   root.name = 'medkit';

@@ -172,15 +172,16 @@ export class WeaponInstance {
 
 /**
  * 玩家的两个武器槽：
- *  槽1 = M19 手枪（永久、无限备弹、保底防卡关）
- *  槽2 = 拾取的主武器
+ *  槽1 = M19 / M19C 手枪（永久、无限备弹、保底防卡关）
+ *  槽2 = 开局所选或拾取的主武器（MP7 / AR / 霰弹 / DMR）
  */
 export class Loadout {
-  constructor({ pistolId = 'pistol' } = {}) {
+  constructor({ pistolId = 'pistol', primaryId = null } = {}) {
     const pistol = WEAPONS[pistolId] ?? WEAPONS.pistol;
     this.slots = [new WeaponInstance(pistol), null];
     this.active = 0;
     this.switchUntil = 0;
+    if (primaryId) this.setPrimary(primaryId, 0);
   }
 
   get current() { return this.slots[this.active]; }
@@ -190,6 +191,31 @@ export class Loadout {
     const pistol = WEAPONS[pistolId] ?? WEAPONS.pistol;
     this.slots[0] = new WeaponInstance(pistol);
     if (this.active === 0) this.switchUntil = 0;
+  }
+
+  /**
+   * 开局或热切换槽 2。传 null 卸下主武器并回到手枪。
+   * now=0 时不锁切枪，保证「开始任务」第一帧就能开火。
+   */
+  setPrimary(weaponId, now = 0) {
+    if (!weaponId) {
+      this.slots[1] = null;
+      this.active = 0;
+      this.switchUntil = 0;
+      return null;
+    }
+    const spec = WEAPONS[weaponId];
+    if (!spec || spec.slot === 1) {
+      this.slots[1] = null;
+      this.active = 0;
+      this.switchUntil = 0;
+      return null;
+    }
+    const old = this.slots[1];
+    this.slots[1] = new WeaponInstance(spec);
+    this.active = 1;
+    this.switchUntil = now > 0 ? now + 0.35 : 0;
+    return old;
   }
 
   switchTo(idx, now) {

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RIG, PALETTE, PLAYER } from '../config.js';
-import { buildGunModel, muzzleLocalZ } from '../systems/gunmesh.js';
+import { buildGunModel, buildGrenadeModel, muzzleLocalZ } from '../systems/gunmesh.js';
 
 /**
  * 方块人形（6 部件 + 枪）。零骨骼、零外部模型：
@@ -83,6 +83,10 @@ export class BlockyRig {
     this.gunPivot.add(this.gun);
     this.muzzle = this.gun.userData.muzzle;
 
+    // 背心左侧挂一颗手雷：开局界面选的种类就是进游戏按 3 扔的那颗。
+    this.nadeKind = 'flash';
+    this.nade = null;
+
     /**
      * 枪挂手电的灯头：一个自发光的小方块。
      *
@@ -99,6 +103,7 @@ export class BlockyRig {
     this.gunPivot.add(this.lamp);
 
     this.attachKit(resolvedKit, color);
+    if (isPlayer) this.setGrenade('flash');
 
     this.walkPhase = 0;
     this.recoil = 0;
@@ -280,6 +285,23 @@ export class BlockyRig {
     this.gunPivot.add(this.gun);
     this.muzzle = this.gun.userData.muzzle;
     this.lamp.position.set(0, 0.08, muzzleLocalZ(id) + 0.08);
+  }
+
+  /** 背心手雷外形跟随开局选择（闪光浅灰 / 高爆橄榄） */
+  setGrenade(kind = 'flash') {
+    const id = kind === 'he' ? 'he' : 'flash';
+    if (this.nadeKind === id && this.nade) return;
+    this.nadeKind = id;
+    if (this.nade) {
+      this.body.remove(this.nade);
+      const hideAt = this.fpHide.indexOf(this.nade);
+      if (hideAt >= 0) this.fpHide.splice(hideAt, 1);
+    }
+    this.nade = buildGrenadeModel(id);
+    this.nade.position.set(-0.42, 1.12, 0.14);
+    this.nade.rotation.z = 0.18;
+    this.body.add(this.nade);
+    this.fpHide.push(this.nade);
   }
 
   setVisible(v) { this.root.visible = v; }

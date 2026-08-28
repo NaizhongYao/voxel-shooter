@@ -38,6 +38,14 @@ const PERCEPTION = {
   visionRange: 18,          // 基础视觉距离 vox
   hFovDeg: 100,             // 水平视野锥
   vFovDeg: 70,              // 垂直视野锥
+  /**
+   * 声音每穿过一层不透光方块的衰减系数（见 Enemy.hearNoise）。
+   *
+   * 0.62：隔一道 2 格厚的墙（算 2 层）剩 38%，隔两道剩 15%。
+   * 效果是「隔壁听得见闷响、隔两个房间基本传不到」——
+   * 墙厚 2 格是本作的硬规则，所以按层数算比按「几道墙」算更自然。
+   */
+  noiseWallMul: 0.62,
   sentryRangeMul: 1.35,     // 蹲守者视野更远
   ambushWakeRange: 6,       // 伏击者的惊起距离
   reactionMin: 0.30,        // 反应延迟下限（秒）
@@ -52,6 +60,21 @@ const PERCEPTION = {
   // 0.55 vox 相对躯干半宽 0.32 → 单发命中率约 55%，符合「受控 DPS」。
   aimError: 0.55,
   burstGap: 0.45,           // 连发之间的停顿
+
+  /**
+   * ── 转向速率（rad/s 的 lerp 系数）──
+   *
+   * 旧值是 4（举枪时）/ 9（战斗中），换算成实际转身要 0.4–0.9 秒才能
+   * 面向侧后方的目标 —— 玩家从背后绕过来时，敌人像在水里转身，
+   * 完全不像真人被偷袭后的反应。
+   *
+   * 现在 combat 18 / alert 14：转 180° 约 0.15 秒，接近真人急转头的速度。
+   * 这不会让敌人变得不公平 —— 反应延迟（reactionTimer）才是玩家的
+   * 机会窗口，转身慢只是让敌人看起来蠢。两者是独立的旋钮。
+   */
+  turnRateCombat: 18,
+  turnRateAlert: 14,
+  turnRateSearch: 9,        // 朝最后已知位置转（没看见人，可以稍慢）
 
   // ── 警戒度（alertLevel）的涨落速率，单位：每秒 ──
   /** 看见玩家时的上涨速率（约 0.5 秒涨满 → 进入战斗） */
@@ -100,6 +123,36 @@ function perc() {
 
 let _idSeq = 0;
 const _v = new THREE.Vector3();
+
+/**
+ * 数出 A→B 直线上穿过了多少层不透光方块（声音传播衰减用）。
+ *
+ * 用等步长采样而不是 DDA：这里只需要「大概隔了几层」，
+ * 采样步长 0.5 vox 对 2 格厚的墙足够可靠，而且比逐格 DDA 便宜得多 ——
+ * 每次开枪都要对全部敌人算一遍，不能太贵。
+ *
+ * 注意判定的是 opaque（挡视线），不是 solid：开着的门是空气，不算遮挡，
+ * 所以「关门挡声、开门漏声」自然成立。
+ */
+function countOpaqueLayers(world, ax, ay, az, bx, by, bz) {
+  const dx = bx - ax, dy = by - ay, dz = bz - az;
+  const dist = Math.hypot(dx, dy, dz);
+  if (dist < 1e-4) return 0;
+  const STEP = 0.5;
+  const n = Math.min(160, Math.ceil(dist / STEP));   // 上限防超长射线
+  let layers = 0, inside = false;
+  for (let i = 1; i < n; i++) {
+    const t = i / n;
+    const gx = Math.floor(ax + dx * t);
+    const gy = Math.floor(ay + dy * t);
+    const gz = Math.floor(az + dz * t);
+    const solid = world.opaqueAt(gx, gy, gz);
+    // 只在「进入一段实心」时计数，连续的同一道墙算一层过渡
+    if (solid && !inside) layers++;
+    inside = solid;
+  }
+  return layers;
+}
 
 /** 实体碰撞半径（圆柱），略小于碰撞盒半宽以免贴墙时互相挤穿 */
 export const ENTITY_RADIUS = 0.28;
@@ -455,17 +508,37 @@ export class Enemy {
    *             跳过慢悠悠的 INVESTIGATE，直接举枪进入 ALERT ——
    *             霰弹/DMR 的枪声就是这么大，听到不该只是「走过去看看」。
    */
-  hearNoise(x, y, z, radius, loud = false) {
+  hearNoise(x, y, z, radius, loud = false, world = null) {
     if (this.dead || this.state === STATE.COMBAT) return false;
+    const p = perc();
     const dy = Math.abs(y - this.pos.y);
     /**
-     * 听觉半径随难度放大（hearRangeMul）：专家档 1.8 倍，
-     * 一声枪响能把半栋楼的人叫过来查房 —— 这是「aggression 随难度上升」
-     * 里最先被玩家感受到的一环，比提高伤害直观得多。
+     * 听觉灵敏度随难度放大（hearRangeMul）：专家档 1.8 倍。
+     * 这是「aggression 随难度上升」里最先被玩家感受到的一环 ——
+     * 同一声枪响，简单档只有隔壁听得到，专家档半层楼都会过来查。
      */
-    const scaled = radius * perc().hearRangeMul;
-    // 跨楼板半径衰减
-    const effective = dy > 2 ? scaled * PERCEPTION.crossFloorMul : scaled;
+    let effective = radius * p.hearRangeMul;
+    // 跨楼板衰减
+    if (dy > 2) effective *= PERCEPTION.crossFloorMul;
+
+    /**
+     * ── 遮挡衰减：声音穿墙会变小 ──
+     *
+     * 之前只比距离，于是一声枪响能让整栋楼 15 个人同时开始查房 ——
+     * 玩家在最角落的房间开一枪，另一头封闭房间里的人也「听见」了，
+     * 既不真实也让潜行毫无意义（反正所有人都会来）。
+     *
+     * 现在沿声源→听者的直线数出中间隔了几层不透光方块，每一层按
+     * NOISE_WALL_MUL 衰减。隔一道墙还听得见（闷响），隔三四道就基本
+     * 传不过去了。开着的门不算遮挡 —— 门开着声音就是直接传过来的，
+     * 这也让「关门」第一次有了战术价值。
+     */
+    const w = world ?? this.world;
+    if (w) {
+      const layers = countOpaqueLayers(w, x, y + 0.6, z, this.pos.x, this.eyeY, this.pos.z);
+      effective *= Math.pow(PERCEPTION.noiseWallMul, layers);
+    }
+
     const d = Math.hypot(x - this.pos.x, y - this.pos.y, z - this.pos.z);
     if (d > effective) return false;
     this.investigateTarget = new THREE.Vector3(x, y, z);
@@ -538,14 +611,16 @@ export class Enemy {
         break;
 
       case STATE.INVESTIGATE:
-        this.doInvestigate(dt, sees);
+        this.doInvestigate(dt, sees, ctx, now);
         break;
 
       case STATE.ALERT:
         // 举枪窗口：玩家唯一的反应机会。
         // 同样只在看得见时跟枪；玩家在举枪期间躲回掩体应该能甩掉瞄准。
-        if (sees) this.faceTarget(player, dt, 7);
-        else if (this.hasLastSeen) this.faceToward(this.lastSeenPlayer, dt, 4);
+        if (sees) this.faceTarget(player, dt, PERCEPTION.turnRateAlert);
+        else if (this.hasLastSeen) {
+          this.faceToward(this.lastSeenPlayer, dt, PERCEPTION.turnRateSearch);
+        }
         this.reactionTimer -= dt;
         this.rig.gunPivot.rotation.x = -0.35;      // 可见的举枪动作
         if (this.reactionTimer <= 0) {
@@ -754,7 +829,9 @@ export class Enemy {
     if (!sees) {
       // 看不见玩家时只能朝「最后看见的位置」，不能跟着真实坐标转。
       // 隔着墙锁定玩家的话，玩家绕到墙后敌人枪口依然精准跟着走，一露头就被打。
-      if (this.hasLastSeen) this.faceToward(this.lastSeenPlayer, dt, 4);
+      if (this.hasLastSeen) {
+        this.faceToward(this.lastSeenPlayer, dt, PERCEPTION.turnRateSearch);
+      }
 
       /**
        * ── 盲射压制 ──
@@ -801,7 +878,7 @@ export class Enemy {
     }
 
     // 只有真正看见时才精确跟枪
-    this.faceTarget(player, dt, 9);
+    this.faceTarget(player, dt, PERCEPTION.turnRateCombat);
 
     /**
      * ── 主动推进 ──

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { PALETTE, LIGHT, PLAYER, NOISE_SPIKE_THRESHOLD } from '../config.js';
 import { D } from '../difficulty.js';
-import { BLOCKS } from '../voxel/blocks.js';
+import { BLOCK, BLOCKS } from '../voxel/blocks.js';
 import { PERCEPTION, rayBox } from './enemy.js';
 
 /**
@@ -157,6 +157,18 @@ export class Combat {
         this.fx.tracer(start, _hitPt, fromEnemy ? PALETTE.threat : 0xffe6a0, spec.tracer * 0.06);
         const spec2 = BLOCKS[wall.id];
         this.fx.impact(_hitPt, _norm, spec2 ? spec2.color : PALETTE.cover, 5);
+        // 弹孔：留在打中的那一面上，是「这里交火过」的持久痕迹。
+        // 可选调用 —— 逻辑测试用的桩 fx 不必实现纯表现层的方法。
+        this.fx.bulletHole?.(_hitPt, _norm);
+
+        /**
+         * 门可以被打坏。门在体素网格里是 BLOCK.DOOR，累计伤害到阈值后
+         * 整扇门消失（变成通路）—— 打烂一扇门是霰弹的合法用法，
+         * 也让「敌人把门关上堵路」不再是死局。
+         */
+        if (wall.id === BLOCK.DOOR && this.onDoorHit) {
+          this.onDoorHit(wall.grid[0], wall.grid[1], wall.grid[2], spec.damage);
+        }
       } else {
         _tmp.copy(start).addScaledVector(dir, spec.range);
         this.fx.tracer(start, _tmp, fromEnemy ? PALETTE.threat : 0xffe6a0, spec.tracer * 0.06);
@@ -216,9 +228,12 @@ export class Combat {
    * @param loud 大口径武器（noise ≥ NOISE_SPIKE_THRESHOLD，见 config.js）。
    *             范围内 IDLE 的敌人会跳过 INVESTIGATE 直接进入 ALERT ——
    *             霰弹/DMR 的枪声就是这么大，手枪/SMG/AR 不触发。
+   *
+   * 声音传播由 Enemy.hearNoise 负责逐个判定 —— 它会沿声源到自己的直线
+   * 数出中间隔了几层墙/门并按层衰减，所以「一声枪响全楼都听见」不再成立。
    */
   emitNoise(x, y, z, radius, loud = false) {
-    for (const e of this.enemies) e.hearNoise(x, y, z, radius, loud);
+    for (const e of this.enemies) e.hearNoise(x, y, z, radius, loud, this.world);
   }
 
   /** 血迹贴花：标记「这里清过」 */
