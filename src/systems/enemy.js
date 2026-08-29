@@ -509,7 +509,7 @@ export class Enemy {
       const halfArc = Math.cos(SHIELD_ENEMY.frontArcDeg * Math.PI / 360);
       if (cos >= halfArc) {
         /**
-         * 正面子弹：固定 200 护甲池吸收 94%，剩下 6%渗到 200 HP。
+         * 正面子弹：固定 500 护盾池吸收 94%，剩下 6%渗到 200 HP。
          * 甲耗尽之后，正面也终于会掉满血；但侧后方/爆炸从第一发起
          * 就完全绕开这段代码，不扣甲也不减伤。
          */
