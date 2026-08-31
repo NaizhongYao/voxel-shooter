@@ -1522,7 +1522,7 @@ function endGame(won) {
       `命中率 <b>${(acc * 100).toFixed(0)}%</b><br>` +
       `<span style="color:var(--threat)">已丢失：主武器×${lostPrimaryCount} · ${lostArmor ? '护甲' : '护甲（未装备）'} · 携带物</span><br>` +
       `<span style="color:var(--good)">保留：手枪 · 已解锁蓝图 · 仓库材料</span><br>` +
-      `<span class="hint-key">按 R 整关重启 · 按 B 回到简报</span>`;
+      `<span class="hint-key">按 R 整关重启 · 按 B 返回任务大厅</span>`;
     // 死亡后当前护甲随风险装备丢失；重载直接跳过整备时必须回到标准护甲，
     // 否则 sessionStorage 中的 dualist 会错误地再次授予槽2权限。
     if (lostArmor) loadoutManager.setArmor('standard');
