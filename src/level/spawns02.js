@@ -92,7 +92,8 @@ export const ENEMY_SPAWNS02 = [
     archetype: ARCHETYPE.PATROLLER, weapon: 'smg', tier: 1,
     patrol: [[35.5, 37.5], [36.5, 37.5], [36.5, 45.5], [35.5, 45.5]],
   },
-  { x: 30.5, y: Y1, z: 38.5, yaw: -Math.PI / 2, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun', tier: 1 },
+  { x: 30.5, y: Y1, z: 38.5, yaw: -Math.PI / 2, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun', tier: 1, wander: true, canCrossRooms: true,
+    wanderRooms: ['or', 'morgue', 'duty', 'lab', 'isolation'] },
 
   // ── 停尸房（南翼东段）── tier 1
   // 两排停尸床之间的暗角，蹲在门口视线外。

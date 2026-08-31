@@ -45,6 +45,16 @@ export const PALETTE = {
   visor:     0x0b0e12,
   boot:      0x1c1814,
 
+  /**
+   * 玩家角色本体基色（皮肤/作战服底色）。
+   *
+   * 只有护甲部件（vest/pouch/helmet，见 rig.js 的 setArmorKit）随护甲 id
+   * 换色，头/躯干/四肢始终是这个基色 —— 人是人、甲是甲，换护甲不该把
+   * 底下的「人」一起染色。选低饱和暖沙色：与 8 套护甲色（冷色系为主）
+   * 全部保持可辨识距离，也不与敌人 threat 红、掉落物 amber 橙混淆。
+   */
+  player:    0xbfae96,
+
   // 建筑材质三档明度：地板最亮、墙中等、天花板最暗。
   // 抬头比低头更暗，这是室内压迫感最廉价的来源。
   concrete:  0x39404a,   // 水泥地板（比原来的 floor 更亮，手电扫过有反馈）
@@ -187,7 +197,7 @@ export const LIGHT = {
 export const CAMERA = {
   fov: 70,
   adsFov: 55,
-  // 第一人称（C 键切换）。GDD 把它列为 M7 可选项：复用同一套射击逻辑，
+  // 第一人称（V 键切换）。GDD 把它列为 M7 可选项：复用同一套射击逻辑，
   // 只换相机并隐藏角色躯干。黑暗压迫感明显更强。
   fpFov: 80,
   fpAdsFov: 58,
@@ -233,7 +243,8 @@ export const PLAYER = {
   // GDD 原值 2.6 是「慢到有战术感」，但实际玩起来太拖。
   // 提到 3.6 仍明显慢于慢跑，节奏还在，但移动不再让人烦躁。
   speed: 3.6,                   // 常速 vox/s
-  slowSpeed: 1.6,               // Ctrl 战术慢走
+  sprintMultiplier: 1.35,       // Shift 按住冲刺：3.6 × 1.35 = 4.86 vox/s
+  slowSpeed: 1.6,               // legacy slow walk（CapsLock）
   crouchSpeed: 1.5,
   // 加速度调高：22 换算成每帧 lerp 只有 0.37，起步和转向都拖泥带水。
   // 45 让方向切换几乎即时响应，同时保留一点惯性。
@@ -246,17 +257,28 @@ export const PLAYER = {
   terminalSafeFall: 4,          // 超过 4 vox 才开始摔伤
   fallDmgPerVox: 5,
   fallDmgCap: 15,
+  /**
+   * 携带栏容量（格）。与 HUD「携带栏 0 / 4」一致。
+   * 每件战利品实例占 1 格；满了之后剩下的收获会留在箱子里，
+   * 处理掉占位（按物品类整理或撤离）后再回来搜刮。
+   */
+  carryCap: 4,
   crouchLerp: 10,               // 蹲伏高度过渡速率
   lean: {
     angleDeg: 22,
     offset: 0.5,                // 侧移 vox（命中盒不动）
     timeMs: 180,
   },
-  noise: { normal: 4.0, slow: 1.2, crouch: 0.8 },
+  noise: { normal: 4.0, sprint: 6.4, slow: 1.2, crouch: 0.8 },
   spread: {
-    normal: 1.0, slow: 0.8, crouch: 0.6,
+    normal: 1.0, sprint: 1.25, slow: 0.8, crouch: 0.6,
     adsMul: 0.4,        // 右键瞄准：散布收到 40%，这才是开镜的机械收益
     movePenalty: 1.5,   // 全速移动中射击的散布惩罚（静止时为 1.0）
+  },
+  roll: {
+    distance: 2.2,              // 左 Alt 闪避的目标位移（实际受碰撞截断）
+    duration: 0.35,
+    cooldown: 1.0,
   },
   // 基础散布整体缩放。武器表里的角度偏大，实际打靶手感偏飘，
   // 统一乘 0.7 让点射更可靠，武器之间的相对差异保持不变。
@@ -402,6 +424,79 @@ export const GRENADES = {
     blindSec: 3.5,
     playerFlashMs: 1200,
   },
+
+  // —— 震撼弹：大范围长致盲，无伤，声音大 ——
+  concussion: {
+    id: 'concussion', label: '震撼',
+    countMul: 1,              // 4/3/2
+    throwSpeed: 13.15, gravity: -20, fuseSec: 1.2,
+    radius: 18, maxDamage: 0, minDamage: 0, selfDamageMul: 0,
+    bounce: 0.4, friction: 0.7, radiusVox: 0.14,
+    noise: 28,
+    flashIntensity: 3600, flashDistance: 30, flashMs: 1600,
+    debris: 24, shake: 0.7,
+    color: 0x9fb4cc,          // 月蓝（区别于 flash 的银灰 0xd8dee8）
+    blindSec: 5.0, playerFlashMs: 1400,
+  },
+
+  // —— 烟雾弹：遮蔽敌人视线，极安静 ——
+  smoke: {
+    id: 'smoke', label: '烟雾',
+    countMul: 0.67,           // 4→2, 3→2, 2→1（floor 语义）
+    throwSpeed: 13.15, gravity: -20, fuseSec: 1.5,
+    radius: 7, maxDamage: 0, minDamage: 0, selfDamageMul: 0,
+    bounce: 0.35, friction: 0.7, radiusVox: 0.14,
+    noise: 12,                // 低于手枪(26)，高于慢走(1.2)：小声但并非无声
+    flashIntensity: 400, flashDistance: 12, flashMs: 2200,   // 长而弱的白烟
+    debris: 8, shake: 0.15,
+    color: 0x8a97a5,
+    blindSec: 0,
+    smokeSec: 8,              // ⚠️ 新机制字段：烟区持续时间
+  },
+
+  // —— 白磷弹：高伤害、长余晖、自伤凶 ——
+  phosphorus: {
+    id: 'phosphorus', label: '白磷',
+    countMul: 1,              // 4/3/2
+    throwSpeed: 13.15, gravity: -20, fuseSec: 2.2,
+    radius: 14, maxDamage: 150, minDamage: 30, selfDamageMul: 0.85,
+    bounce: 0.35, friction: 0.72, radiusVox: 0.14,
+    noise: 30,
+    flashIntensity: 2000, flashDistance: 40, flashMs: 1500,   // 长余晖 = 「还在烧」的视觉
+    debris: 60, shake: 0.9,
+    color: 0xff7a3c,
+    blindSec: 0,
+  },
+
+  // —— 电磁脉冲弹：范围灭灯 ——
+  emp: {
+    id: 'emp', label: '脉冲',
+    countMul: 0.67,           // 2/2/1
+    throwSpeed: 13.15, gravity: -20, fuseSec: 2.0,
+    radius: 18, maxDamage: 0, minDamage: 0, selfDamageMul: 0,
+    bounce: 0.4, friction: 0.7, radiusVox: 0.14,
+    noise: 18,                // 电流爆音，中低
+    flashIntensity: 900, flashDistance: 22, flashMs: 500,     // 青蓝电弧闪
+    debris: 14, shake: 0.3,
+    color: 0x4cc9f0,
+    blindSec: 0,
+    empRadius: 18,            // ⚠️ 新机制字段：灭灯半径
+  },
+
+  // —— 诱饵弹：落点脉冲噪音 ——
+  decoy: {
+    id: 'decoy', label: '诱饵',
+    countMul: 0.67,           // 2/2/1
+    throwSpeed: 13.15, gravity: -20, fuseSec: 1.0,
+    radius: 0, maxDamage: 0, minDamage: 0, selfDamageMul: 0,
+    bounce: 0.4, friction: 0.7, radiusVox: 0.14,
+    noise: 6,                 // 落地本身几乎无声
+    flashIntensity: 500, flashDistance: 14, flashMs: 400,
+    debris: 6, shake: 0.1,
+    color: 0x8a7fb5,
+    blindSec: 0,
+    decoyPulses: 4, decoyPulseGap: 1.5, decoyPulseRadius: 20, // ⚠️ 新机制字段
+  },
 };
 
 /** 兼容旧测试与旧调用：默认仍是高爆参数表 */
@@ -428,18 +523,42 @@ export const RIG = {
 
 export const INPUT = {
   forward: ['KeyW'], back: ['KeyS'], left: ['KeyA'], right: ['KeyD'],
-  jump: ['Space'], crouch: ['ShiftLeft', 'ShiftRight'],
-  slow: ['ControlLeft', 'ControlRight'],
-  // 倾斜 Q / E（左右探头），开门 X，手电 F（保持原键位）
-  leanLeft: ['KeyQ'], leanRight: ['KeyE'],
+  jump: ['Space'],
+  fire: ['Mouse0'], aim: ['Mouse2'],
+
+  // 本项目键位，不宣称为 ARC Raiders 官方默认配置。
+  sprint: ['ShiftLeft'],
+  crouchHold: ['ControlLeft', 'ControlRight'],
+  crouchToggle: ['KeyC'],
+  // CapsLock 是浏览器真实的 KeyboardEvent.code。保留为 legacy slow walk，
+  // 不能继续占用 Ctrl，否则蹲伏按住和慢走会产生状态歧义。
+  slow: ['CapsLock'],
+  roll: ['AltLeft'],
+  leanLeft: ['KeyZ'], leanRight: ['KeyT'],
+
+  interact: ['KeyE'],
+  interactDoor: ['KeyE'],
+  inventory: ['Tab'],
+  quickWheel: ['KeyQ'],
+  map: ['KeyM'],
+  minimap: ['KeyH'],
   flashlight: ['KeyF'],
-  toggleView: ['KeyC'],
-  grenade: ['Digit3'],
-  mute: ['KeyM'],
-  // N 紧挨 M：M 管全部音效，N 只切背景音乐
+  weaponSlot0: ['Digit1'], weaponSlot1: ['Digit2'], weaponSlot2: ['Digit3'],
+  reload: ['KeyR'],
+  shoulder: ['KeyX'],
+  viewToggle: ['KeyV'],
+  mute: ['F10'],
   music: ['KeyN'],
-  // Tab 切小地图。input.js 在指针锁定时已经吞掉 Tab 的默认行为（焦点跳转），
-  // 所以按它不会把焦点甩到浏览器 UI 上。
-  minimap: ['Tab'],
+  grenade: ['KeyG'],
+  restart: ['KeyR'],
+  backToBrief: ['KeyB'],
+  cancel: ['Escape'],
+
+  // 旧动作名过渡别名：调用方应迁移至上面的业务动作名。
+  crouch: ['ControlLeft', 'ControlRight'],
+  pickup: ['KeyE'],
+  toggleView: ['KeyV'],
+
+  // 非业务调试动作。
   debug: ['Backquote'],
 };

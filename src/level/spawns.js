@@ -81,7 +81,8 @@ export const ENEMY_SPAWNS = [
     // 没人重跑过求解器），由 tools/check-level01-spawns.mjs 抓出来。
     patrol: [[12.5, 38.5], [22.5, 38.5], [22.5, 45.5], [12.5, 45.5]],
   },
-  { x: 20.5, y: Y1, z: 40.5, yaw: Math.PI / 2, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun', tier: 1 },
+  { x: 20.5, y: Y1, z: 40.5, yaw: Math.PI / 2, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun', tier: 1, wander: true, canCrossRooms: true,
+    wanderRooms: ['living', 'southHall', 'foyer', 'kitchen', 'corridor'] },
 
   // ── 厨房（东南）── tier 3：专家难度才追加的第二个伏击者，
   // 与下方的武装巡逻者形成南翼的双重威胁。

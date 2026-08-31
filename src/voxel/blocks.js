@@ -26,23 +26,24 @@ export const BLOCK = {
   GRASS:     10,   // 庭院地面（有月光）
   RESERVED_11: 11, // 曾是 CATWALK（二层薄走道），同上
 
-  // ── 家具（让黑楼像个住过人的地方）──
-  // 全部仍是方块，只是高度/颜色/透光性不同，所以掩体分级依然一眼可读。
-  SOFA:      12,   // 沙发座（矮掩体，可跳上）
-  SOFA_BACK: 13,   // 沙发靠背（齐胸，挡视线）
-  TABLE:     14,   // 桌面（腿高，可蹲身躲）
-  TV:        15,   // 电视（深色屏幕）
-  BED:       16,   // 床垫
-  CABINET:   17,   // 柜子 / 冰箱（满高，挡光）
-  CARPET:    18,   // 地毯（贴地薄片，纯装饰）
-  LAMP:      19,   // 台灯（自发光，唯一的室内光点）
-  PLANT:     20,   // 盆栽（透光，不挡视线）
-  COUNTER:   21,   // 厨房台面 / 吧台
-  CHAIR:     22,   // 椅子
-  WARDROBE:  23,   // 衣柜（满高）
-  PICTURE:   24,   // 墙上挂画（贴墙薄片）
-  SINK:      25,   // 洗手台 / 马桶
-  BOOKSHELF: 26,   // 书架（透光，缝隙漏光）
+  // ── 家具 ID（deprecated voxel compatibility slots）────────────────────
+  // 正式家具布局只写 furniture metadata；这些 numeric ID 仍必须稳定，供旧
+  // 存档、平面图 fallback 和测试工具读取，不能重新编号或删除槽位。
+  SOFA:      12,   // deprecated: 沙发座
+  SOFA_BACK: 13,   // deprecated: 沙发靠背
+  TABLE:     14,   // deprecated: 桌面
+  TV:        15,   // deprecated: 电视
+  BED:       16,   // deprecated: 床垫
+  CABINET:   17,   // deprecated: 柜子 / 冰箱
+  CARPET:    18,   // deprecated: 地毯
+  LAMP:      19,   // deprecated: 台灯
+  PLANT:     20,   // deprecated: 盆栽
+  COUNTER:   21,   // deprecated: 厨房台面 / 吧台
+  CHAIR:     22,   // deprecated: 椅子
+  WARDROBE:  23,   // deprecated: 衣柜
+  PICTURE:   24,   // deprecated: 墙上挂画
+  SINK:      25,   // deprecated: 洗手台 / 马桶
+  BOOKSHELF: 26,   // deprecated: 书架
 
   // ── 建筑材质分层 ──
   // 地板/墙/天花板用不同明度，室内空间的上下界才读得出来。
@@ -64,19 +65,9 @@ export const BLOCK = {
    */
   DOOR:      31,
 
-  /**
-   * 应急灯（可击碎）。天花板下的老式灯管，接触不良所以一直在闪。
-   *
-   * 与 LAMP 的区别：LAMP 是纯装饰的自发光方块（顶点色，没有真光源），
-   * 这个挂一盏真的 PointLight —— 会真的照亮房间，也真的让站在灯下的
-   * 玩家更容易被敌人看见。玩家可以把它打碎换回黑暗，这是本作唯一
-   * 「玩家能改写关卡照明」的手段，所以它必须是可被子弹命中的方块。
-   *
-   * 不 solid（贴在天花板下，不该挡人走路），但 hittable —— 命中判定
-   * 由 combat 的方块射线单独处理，见 systems/lights.js。
-   */
+  /** 应急灯保留为 lights.js/fallback 使用的正式体素标记。 */
   FLICKER_LAMP:  32,
-  /** 打碎后的残骸：同样占格但不发光，让玩家看得出「这盏已经打过了」 */
+  /** 打碎后的残骸，供运行时状态和 fallback 扫描使用。 */
   LAMP_BROKEN:   33,
 };
 
@@ -89,6 +80,8 @@ export const BLOCKS = [];
 BLOCKS[BLOCK.AIR]       = def({ solid: false, opaque: false, render: false, height: 0 });
 BLOCKS[BLOCK.WALL]      = def({ color: PALETTE.wall,  name: 'wall' });
 BLOCKS[BLOCK.FLOOR]     = def({ color: PALETTE.floor, name: 'floor', climbable: true });
+// Deprecated compatibility fixtures: canonical furniture uses metadata, but
+// render/logic/fallback tools still need real generic obstacle definitions.
 BLOCKS[BLOCK.CRATE]     = def({ color: PALETTE.cover, name: 'crate', climbable: true });
 BLOCKS[BLOCK.SHELF]     = def({ color: PALETTE.cover, name: 'shelf', opaque: false });
 BLOCKS[BLOCK.RESERVED_5] = def({ solid: false, opaque: false, render: false, height: 0, name: 'reserved_5' });
@@ -99,27 +92,29 @@ BLOCKS[BLOCK.DECAL]     = def({ solid: false, opaque: false, height: 0.02, color
 BLOCKS[BLOCK.GRASS]     = def({ color: 0x232b36, name: 'grass', climbable: true });
 BLOCKS[BLOCK.RESERVED_11] = def({ solid: false, opaque: false, render: false, height: 0, name: 'reserved_11' });
 
-// ── 家具 ──────────────────────────────────────────────────────────────────
-// 高度决定掩体等级（GDD 02 章「掩体天然分级」）：
-//   ≤0.6 → 蹲下可完全遮蔽   1.0 → 遮蔽蹲伏玩家   ≥1.5 → 遮蔽站立躯干
-const FURN = PALETTE.furniture;
-BLOCKS[BLOCK.SOFA]      = def({ color: FURN.sofa,   name: 'sofa',   height: 0.55, climbable: true, opaque: false });
-BLOCKS[BLOCK.SOFA_BACK] = def({ color: FURN.sofa,   name: 'sofa_back', height: 1.0, climbable: true });
-BLOCKS[BLOCK.TABLE]     = def({ color: FURN.wood,   name: 'table',  height: 0.75, climbable: true, opaque: false });
-BLOCKS[BLOCK.TV]        = def({ color: FURN.screen, name: 'tv',     height: 0.7,  opaque: false, emissive: 0.35 });
-BLOCKS[BLOCK.BED]       = def({ color: FURN.fabric, name: 'bed',    height: 0.5,  climbable: true, opaque: false });
-BLOCKS[BLOCK.CABINET]   = def({ color: FURN.wood,   name: 'cabinet', height: 1.0, climbable: true });
-BLOCKS[BLOCK.CARPET]    = def({ color: FURN.carpet, name: 'carpet', height: 0.03, solid: false, opaque: false });
-BLOCKS[BLOCK.PLANT]     = def({ color: FURN.plant,  name: 'plant',  height: 0.8,  opaque: false });
-BLOCKS[BLOCK.COUNTER]   = def({ color: FURN.stone,  name: 'counter', height: 0.9, climbable: true });
-BLOCKS[BLOCK.CHAIR]     = def({ color: FURN.wood,   name: 'chair',  height: 0.5,  climbable: true, opaque: false });
-BLOCKS[BLOCK.WARDROBE]  = def({ color: FURN.woodDark, name: 'wardrobe', height: 1.0 });
-BLOCKS[BLOCK.PICTURE]   = def({ color: FURN.frame,  name: 'picture', height: 1.0, solid: false, opaque: false, jitter: false });
-BLOCKS[BLOCK.SINK]      = def({ color: FURN.porcelain, name: 'sink', height: 0.8, climbable: true, opaque: false });
-BLOCKS[BLOCK.BOOKSHELF] = def({ color: FURN.woodDark, name: 'bookshelf', height: 1.0, opaque: false });
-// 台灯：唯一的室内自发光方块。它给黑屋提供零星的「有人住过」的暖光锚点，
-// 同时不破坏「只有手电带阴影」的性能预算（发光靠顶点色，不是真光源）。
-BLOCKS[BLOCK.LAMP]      = def({ color: FURN.lamp,   name: 'lamp',   height: 0.6, opaque: false, emissive: 0.55 });
+// ── 普通家具兼容槽位 ───────────────────────────────────────────────────────
+// 普通家具的颜色、高度、碰撞和发光语义已迁移到 furniture metadata/mesh/
+// collider。这里不能留旧的实体定义，否则任一误写 numeric ID 都会把家具
+// 重新带回 voxel 生产路径；每个 ID 仍有完整 BLOCKS 槽位供兼容读取。
+const deprecatedFurniture = (name) => def({
+  name: `${name}_deprecated`, solid: false, opaque: false, render: false, height: 0,
+  climbable: false, emissive: 0, jitter: false,
+});
+BLOCKS[BLOCK.SOFA]      = deprecatedFurniture('sofa');
+BLOCKS[BLOCK.SOFA_BACK] = deprecatedFurniture('sofa_back');
+BLOCKS[BLOCK.TABLE]     = deprecatedFurniture('table');
+BLOCKS[BLOCK.TV]        = deprecatedFurniture('tv');
+BLOCKS[BLOCK.BED]       = deprecatedFurniture('bed');
+BLOCKS[BLOCK.CABINET]   = deprecatedFurniture('cabinet');
+BLOCKS[BLOCK.CARPET]    = deprecatedFurniture('carpet');
+BLOCKS[BLOCK.LAMP]      = deprecatedFurniture('lamp');
+BLOCKS[BLOCK.PLANT]     = deprecatedFurniture('plant');
+BLOCKS[BLOCK.COUNTER]   = deprecatedFurniture('counter');
+BLOCKS[BLOCK.CHAIR]     = deprecatedFurniture('chair');
+BLOCKS[BLOCK.WARDROBE]  = deprecatedFurniture('wardrobe');
+BLOCKS[BLOCK.PICTURE]   = deprecatedFurniture('picture');
+BLOCKS[BLOCK.SINK]      = deprecatedFurniture('sink');
+BLOCKS[BLOCK.BOOKSHELF] = deprecatedFurniture('bookshelf');
 
 // ── 建筑材质 ──────────────────────────────────────────────────────────────
 // 明度刻意分三档：地板最亮（手电扫过去有反馈）、墙中等、天花板最暗

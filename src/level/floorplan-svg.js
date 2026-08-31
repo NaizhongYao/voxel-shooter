@@ -6,7 +6,7 @@ import { BLOCK } from '../voxel/blocks.js';
  *   2. tools/make-floorplan02.mjs（同上，第二关）
  *   3. 任务简报「地图」页 + 任务选择屏缩略图（深色）
  *
- * 直接读体素网格，所以图和游戏永远一致。
+ * 建筑几何读体素网格；家具读关卡返回的 placement 元数据。
  */
 
 const CELL = 11;
@@ -33,6 +33,34 @@ export const LEGEND = {
   [BLOCK.CRATE]:     { s: '▪', c: '#5a6474', n: '木箱' },
   [BLOCK.SHELF]:     { s: '▨', c: '#5a6474', n: '货架' },
 };
+
+// 新家具覆盖层使用稳定的字符串 ID；旧 World 仍可能给出 BLOCK 数字 ID。
+const LEGEND_BLOCK_BY_FURNITURE_ID = {
+  sofa: BLOCK.SOFA,
+  sofaBack: BLOCK.SOFA_BACK,
+  table: BLOCK.TABLE,
+  tv: BLOCK.TV,
+  bed: BLOCK.BED,
+  cabinet: BLOCK.CABINET,
+  carpet: BLOCK.CARPET,
+  lamp: BLOCK.LAMP,
+  plant: BLOCK.PLANT,
+  counter: BLOCK.COUNTER,
+  chair: BLOCK.CHAIR,
+  wardrobe: BLOCK.WARDROBE,
+  picture: BLOCK.PICTURE,
+  sink: BLOCK.SINK,
+  bookshelf: BLOCK.BOOKSHELF,
+  crate: BLOCK.CRATE,
+  shelf: BLOCK.SHELF,
+  flickerLamp: BLOCK.FLICKER_LAMP,
+  lampBroken: BLOCK.LAMP_BROKEN,
+};
+const FURNITURE_ID_BY_BLOCK = new Map(
+  Object.entries(LEGEND_BLOCK_BY_FURNITURE_ID).map(([id, block]) => [block, id])
+);
+const EMERGENCY_LAMP_IDS = new Set(['flickerLamp', 'lampBroken']);
+const LAMP_IDS = new Set(['lamp', ...EMERGENCY_LAMP_IDS]);
 
 const WALLS = new Set([BLOCK.WALL, BLOCK.WALL_IN]);
 const STAIRS = new Set([BLOCK.STAIR_LO, BLOCK.STAIR_HI]);
@@ -69,16 +97,53 @@ function bounds(w, y) {
            z0: Math.max(0, z0 - 1), z1: Math.min(w.sz - 1, z1 + 1) };
 }
 
+function legendForId(id) {
+  return LEGEND[typeof id === 'string' ? LEGEND_BLOCK_BY_FURNITURE_ID[id] : id];
+}
+
 export function legendItems(used) {
   const seen = new Set();
   const out = [];
-  for (const id of used) {
-    const L = LEGEND[id];
+  for (const entry of used ?? []) {
+    const id = used instanceof Map ? entry[0] : entry;
+    const L = legendForId(id);
     if (!L || seen.has(L.n)) continue;
     seen.add(L.n);
     out.push({ n: L.n, c: L.c });
   }
   return out;
+}
+
+function placementId(item) {
+  const baseId = typeof item.id === 'string' ? item.id : FURNITURE_ID_BY_BLOCK.get(item.id);
+  const state = item.lampState ?? item.state;
+  if (LAMP_IDS.has(baseId) && (state === 'broken' || item.broken === true)) return 'lampBroken';
+  if (LAMP_IDS.has(baseId) && (state === 'flickerLamp' || state === 'flicker')) return 'flickerLamp';
+  if (LAMP_IDS.has(baseId) && state === 'lamp') return 'lamp';
+  return baseId;
+}
+
+function placementGridBounds(item) {
+  const width = item.boundsW ?? item.w ?? 1;
+  const depth = item.boundsD ?? item.d ?? 1;
+  const x0 = Math.floor(item.x);
+  const z0 = Math.floor(item.z);
+  return {
+    x0, z0,
+    x1: Math.ceil(item.x + width) - 1,
+    z1: Math.ceil(item.z + depth) - 1,
+  };
+}
+
+function clippedGridBounds(item, b) {
+  const aabb = placementGridBounds(item);
+  const x0 = Math.max(b.x0, aabb.x0), x1 = Math.min(b.x1, aabb.x1);
+  const z0 = Math.max(b.z0, aabb.z0), z1 = Math.min(b.z1, aabb.z1);
+  return x0 <= x1 && z0 <= z1 ? { x0, x1, z0, z1 } : null;
+}
+
+function isFloorCarpet(item, y) {
+  return placementId(item) === 'carpet' && Math.abs((item.y ?? y) - y) < 0.5;
 }
 
 /**
@@ -112,13 +177,26 @@ export function renderFloorplanSvg(w, {
     }
   }
 
-  // 地毯（当作背景）
-  for (let z = b.z0; z <= b.z1; z++)
-    for (let x = b.x0; x <= b.x1; x++) {
-      if (w.get(x, y, z) !== BLOCK.CARPET) continue;
-      parts.push(`<rect x="${(x - b.x0) * CELL}" y="${(z - b.z0) * CELL}" width="${CELL}" height="${CELL}" fill="${T.carpet}"/>`);
-      used.set(BLOCK.CARPET, true);
+  const placements = Array.isArray(w.furniture?.placements) ? w.furniture.placements : null;
+
+  // 地毯（当作背景）。正式关卡以 placement 为准；旧 World 才读体素。
+  if (placements) {
+    for (const item of placements) {
+      if (!isFloorCarpet(item, y)) continue;
+      const aabb = clippedGridBounds(item, b);
+      if (!aabb) continue;
+      const px = (aabb.x0 - b.x0) * CELL, pz = (aabb.z0 - b.z0) * CELL;
+      parts.push(`<rect x="${px}" y="${pz}" width="${(aabb.x1 - aabb.x0 + 1) * CELL}" height="${(aabb.z1 - aabb.z0 + 1) * CELL}" fill="${T.carpet}"/>`);
+      used.set('carpet', true);
     }
+  } else {
+    for (let z = b.z0; z <= b.z1; z++)
+      for (let x = b.x0; x <= b.x1; x++) {
+        if (w.get(x, y, z) !== BLOCK.CARPET) continue;
+        parts.push(`<rect x="${(x - b.x0) * CELL}" y="${(z - b.z0) * CELL}" width="${CELL}" height="${CELL}" fill="${T.carpet}"/>`);
+        used.set(BLOCK.CARPET, true);
+      }
+  }
 
   // 墙
   for (let z = b.z0; z <= b.z1; z++)
@@ -137,44 +215,76 @@ export function renderFloorplanSvg(w, {
       parts.push(`<line x1="${px}" y1="${pz + CELL / 2}" x2="${px + CELL}" y2="${pz + CELL / 2}" stroke="${T.stairLine}" stroke-width="1"/>`);
     }
 
-  // 家具
-  for (let z = b.z0; z <= b.z1; z++)
-    for (let x = b.x0; x <= b.x1; x++) {
-      const id = w.get(x, y, z);
-      const L = LEGEND[id];
-      if (!L || id === BLOCK.CARPET) continue;
+  // 家具。每个 placement 只投影一次，所以 2 格高货架等多层记录不会重复。
+  if (placements) {
+    for (const item of placements) {
+      const id = placementId(item);
+      const L = legendForId(id);
+      if (!L || id === 'carpet' || EMERGENCY_LAMP_IDS.has(id)) continue;
+      const aabb = clippedGridBounds(item, b);
+      if (!aabb) continue;
       used.set(id, true);
-      const px = (x - b.x0) * CELL, pz = (z - b.z0) * CELL;
-      parts.push(`<rect x="${px + 0.5}" y="${pz + 0.5}" width="${CELL - 1}" height="${CELL - 1}" fill="${L.c}" rx="1"/>`);
+      const px = (aabb.x0 - b.x0) * CELL, pz = (aabb.z0 - b.z0) * CELL;
+      const width = (aabb.x1 - aabb.x0 + 1) * CELL;
+      const height = (aabb.z1 - aabb.z0 + 1) * CELL;
+      parts.push(`<rect x="${px + 0.5}" y="${pz + 0.5}" width="${width - 1}" height="${height - 1}" fill="${L.c}" rx="1"/>`);
       if (L.s) {
-        parts.push(`<text x="${px + CELL / 2}" y="${pz + CELL / 2 + 3}" font-size="8" fill="${T.textFill}" text-anchor="middle" opacity="${T.textOpacity}">${L.s}</text>`);
+        parts.push(`<text x="${px + width / 2}" y="${pz + height / 2 + 3}" font-size="8" fill="${T.textFill}" text-anchor="middle" opacity="${T.textOpacity}">${L.s}</text>`);
       }
     }
+  } else {
+    for (let z = b.z0; z <= b.z1; z++)
+      for (let x = b.x0; x <= b.x1; x++) {
+        const id = w.get(x, y, z);
+        const L = LEGEND[id];
+        if (!L || id === BLOCK.CARPET) continue;
+        used.set(id, true);
+        const px = (x - b.x0) * CELL, pz = (z - b.z0) * CELL;
+        parts.push(`<rect x="${px + 0.5}" y="${pz + 0.5}" width="${CELL - 1}" height="${CELL - 1}" fill="${L.c}" rx="1"/>`);
+        if (L.s) {
+          parts.push(`<text x="${px + CELL / 2}" y="${pz + CELL / 2 + 3}" font-size="8" fill="${T.textFill}" text-anchor="middle" opacity="${T.textOpacity}">${L.s}</text>`);
+        }
+      }
+  }
 
   /**
-   * 天花板下的可击碎应急灯：它们不在 y=1（挂在 y=3），所以不能混进
-   * 上面的地面家具循环。单独从 y=2..顶层扫一次，投影到同一张平面图。
+   * 天花板下的可击碎应急灯不在 y=1（挂在 y=3），所以不能混进上面的
+   * 地面家具循环。正式关卡从 placement 取位置和状态，旧 World 才扫顶层。
    *
    * 普通战斗小地图不走这条渲染器（它只读 rooms），因此灯只会出现在
    * 开发者平面图 / 简报地图 / 任务选择缩略图，不会给战斗 HUD 添杂物。
    */
-  for (let z = b.z0; z <= b.z1; z++)
-    for (let x = b.x0; x <= b.x1; x++) {
-      let id = BLOCK.AIR;
-      for (let ly = 2; ly < w.sy; ly++) {
-        const candidate = w.get(x, ly, z);
-        if (candidate === BLOCK.FLICKER_LAMP || candidate === BLOCK.LAMP_BROKEN) {
-          id = candidate;
-          break;
-        }
-      }
-      const L = LEGEND[id];
-      if (!L) continue;
+  if (placements) {
+    for (const item of placements) {
+      const id = placementId(item);
+      if (!EMERGENCY_LAMP_IDS.has(id)) continue;
+      const L = legendForId(id);
+      const aabb = clippedGridBounds(item, b);
+      if (!L || !aabb) continue;
       used.set(id, true);
-      const px = (x - b.x0) * CELL, pz = (z - b.z0) * CELL;
+      const px = (aabb.x0 - b.x0) * CELL, pz = (aabb.z0 - b.z0) * CELL;
       parts.push(`<rect x="${px + 1.5}" y="${pz + 1.5}" width="${CELL - 3}" height="${CELL - 3}" fill="${L.c}" rx="5.5"/>`);
       parts.push(`<text x="${px + CELL / 2}" y="${pz + CELL / 2 + 3}" font-size="8" fill="${T.textFill}" text-anchor="middle" opacity="${T.textOpacity}">${L.s}</text>`);
     }
+  } else {
+    for (let z = b.z0; z <= b.z1; z++)
+      for (let x = b.x0; x <= b.x1; x++) {
+        let id = BLOCK.AIR;
+        for (let ly = 2; ly < w.sy; ly++) {
+          const candidate = w.get(x, ly, z);
+          if (candidate === BLOCK.FLICKER_LAMP || candidate === BLOCK.LAMP_BROKEN) {
+            id = candidate;
+            break;
+          }
+        }
+        const L = LEGEND[id];
+        if (!L) continue;
+        used.set(id, true);
+        const px = (x - b.x0) * CELL, pz = (z - b.z0) * CELL;
+        parts.push(`<rect x="${px + 1.5}" y="${pz + 1.5}" width="${CELL - 3}" height="${CELL - 3}" fill="${L.c}" rx="5.5"/>`);
+        parts.push(`<text x="${px + CELL / 2}" y="${pz + CELL / 2 + 3}" font-size="8" fill="${T.textFill}" text-anchor="middle" opacity="${T.textOpacity}">${L.s}</text>`);
+      }
+  }
 
   // 门
   for (const d of doors) {

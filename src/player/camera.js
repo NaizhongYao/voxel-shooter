@@ -24,7 +24,8 @@ export class OrbitFollowCamera {
     this.aiming = false;
     this.leanAmt = 0;
     this.shake = 0;
-    this.firstPerson = false;     // C 键切换；第一人称复用同一套射击逻辑
+    this.firstPerson = false;     // V 键切换；第一人称复用同一套射击逻辑
+    this.shoulder = 1;            // 1 = 右肩，-1 = 左肩
 
     this._anchor = new THREE.Vector3();
     this._desired = new THREE.Vector3();
@@ -55,11 +56,16 @@ export class OrbitFollowCamera {
   /**
    * @param feetY  角色脚底 y
    * @param height 当前碰撞高度（蹲伏时变小）
+   * @param adsTime ADS 瞄准过渡时间（秒），来自武器配件修正
    */
-  update(dt, { x, z, feetY, height, leanAmt }) {
+  update(dt, { x, z, feetY, height, leanAmt, adsTime = 0.25 }) {
     const off = this.aiming ? CAMERA.adsOffset : CAMERA.offset;
     const lerp = this.aiming ? CAMERA.adsFollowLerp : CAMERA.followLerp;
     const fovTarget = this.aiming ? CAMERA.adsFov : CAMERA.fov;
+    
+    // ADS FOV 过渡速率：根据武器的 adsTime 动态调整
+    // 默认 0.25s 完成过渡，速率 = 1 / adsTime * k（k=2.25 校准到原来的 dt*9）
+    const adsFovRate = 1 / adsTime * 2.25;
 
     this.leanAmt += (leanAmt - this.leanAmt) * Math.min(1, dt * 1000 / PLAYER.lean.timeMs);
 
@@ -93,8 +99,9 @@ export class OrbitFollowCamera {
       this.applyShake(dt);
 
       const fpFov = this.aiming ? CAMERA.fpAdsFov : CAMERA.fpFov;
+      const fpAdsRate = 1 / adsTime * 3.0;  // 第一人称用稍快的速率
       if (Math.abs(this.cam.fov - fpFov) > 0.05) {
-        this.cam.fov += (fpFov - this.cam.fov) * Math.min(1, dt * 12);
+        this.cam.fov += (fpFov - this.cam.fov) * Math.min(1, dt * fpAdsRate);
         this.cam.updateProjectionMatrix();
       }
       return;
@@ -105,7 +112,7 @@ export class OrbitFollowCamera {
     // 之前这里手写了一个绕右轴的旋转，符号是反的：抬头时相机往上跑、
     // 低头时相机沉到地板以下，角色看起来就像趴在地上。
     // 改成标准环绕公式后，低头相机升高俯视、抬头相机降低仰视，行为正确。
-    const lx = off.x, ly = off.y - PLAYER.eyeHeight, lz = off.z;
+    const lx = off.x * this.shoulder, ly = off.y - PLAYER.eyeHeight, lz = off.z;
     this._desired.set(
       this._anchor.x - this._view.x * lz + cy * lx,
       this._anchor.y - this._view.y * lz + ly,
@@ -162,7 +169,7 @@ export class OrbitFollowCamera {
     this.applyShake(dt);
 
     if (Math.abs(this.cam.fov - fovTarget) > 0.05) {
-      this.cam.fov += (fovTarget - this.cam.fov) * Math.min(1, dt * 9);
+      this.cam.fov += (fovTarget - this.cam.fov) * Math.min(1, dt * adsFovRate);
       this.cam.updateProjectionMatrix();
     }
   }
@@ -175,6 +182,15 @@ export class OrbitFollowCamera {
     this.cam.position.y += (Math.random() - 0.5) * 0.09 * s;
     this.cam.rotateZ((Math.random() - 0.5) * 0.04 * s);
     this.shake = Math.max(0, this.shake - dt * 3.2);
+  }
+
+  /**
+   * 第三人称时在左右肩间切换；第一人称没有横向肩位，保持不变。
+   * @returns {number} 切换后的肩位符号（右 1 / 左 -1）
+   */
+  toggleShoulder() {
+    if (!this.firstPerson) this.shoulder *= -1;
+    return this.shoulder;
   }
 
   /** 切换第一/第三人称，返回切换后是否为第一人称 */

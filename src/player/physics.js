@@ -86,32 +86,45 @@ export class Body {
    * 原来的整轴回退会让贴墙行走每帧都在「进入墙里 → 弹回原位」之间抖动，
    * 手感就是那种一卡一卡的顿感。推进到接触面后，贴墙滑行是连续的。
    */
-  moveAxis(world, axis, delta) {
-    if (delta === 0) return;
+  moveAxis(world, axis, delta, allowStepUp = true) {
+    if (delta === 0) return 0;
     const before = this.pos[axis];
     this.pos[axis] = before + delta;
-    if (!this.blocked(world, this.pos.x, this.pos.y, this.pos.z)) return;
+    if (!this.blocked(world, this.pos.x, this.pos.y, this.pos.z)) return delta;
 
     // 受阻：先尝试自动登台（半格阶梯 / 1 格台阶）
-    if (this.onGround) {
+    if (allowStepUp && this.onGround) {
       for (let lift = 0.1; lift <= PLAYER.stepUpMax + 1e-6; lift += 0.1) {
         if (!this.blocked(world, this.pos.x, this.pos.y + lift, this.pos.z)) {
           this.pos.y += lift;
-          return;
+          return delta;
         }
       }
     }
 
-    // 登不上去：二分找到最远的可行位置，贴住墙面而不是弹回
-    let lo = 0, hi = delta;
+    // 登不上去：二分找到最远的可行位置，贴住墙面而不是弹回。
+    // 用距离 + 方向二分，保证向负轴滚动/后退时同样正确。
+    const sign = Math.sign(delta);
+    let lo = 0, hi = Math.abs(delta);
     for (let i = 0; i < 8; i++) {
       const mid = (lo + hi) / 2;
-      this.pos[axis] = before + mid;
+      this.pos[axis] = before + sign * mid;
       if (this.blocked(world, this.pos.x, this.pos.y, this.pos.z)) hi = mid;
       else lo = mid;
     }
-    this.pos[axis] = before + lo;
+    this.pos[axis] = before + sign * lo;
     this.vel[axis] = 0;
+    return sign * lo;
+  }
+
+  /**
+   * 用既有 AABB 解算推进一次水平位移。滚动等动作必须走这条路径，
+   * 不能直接改视觉节点或跳过体素碰撞。
+   */
+  moveHorizontal(world, dx, dz, { allowStepUp = true } = {}) {
+    const movedX = this.moveAxis(world, 'x', dx, allowStepUp);
+    const movedZ = this.moveAxis(world, 'z', dz, allowStepUp);
+    return { x: movedX, z: movedZ };
   }
 
   moveVertical(world, delta) {

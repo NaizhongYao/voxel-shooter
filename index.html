@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>肃清协议 3D · PROTOCOL: CLEARANCE</title>
+<title>提取行动 3D · EXTRACTION RAID</title>
 <style>
   :root{
     --amber:#f5a623; --threat:#e5484d; --cyan:#4cc9f0;
@@ -26,6 +26,57 @@
   #crosshair i:nth-child(3){ top:0; left:calc(-1 * var(--gap) - 8px); height:2px; width:8px; }
   #crosshair i:nth-child(4){ top:0; left:var(--gap); height:2px; width:8px; }
   #crosshair.blocked i{ background:var(--threat); }
+
+  /**
+   * Quick Wheel（Q 按住打开）：双环深色径向轮盘，固定 5 槽（含空槽，不压缩）。
+   * 视觉语言沿用截图观察：外层物品槽 + 深色环体 + 中央取消区；数字徽标位用
+   * 位置序号而非 1-5 数字直达键（避免覆盖 1/2/3 武器槽）。
+   * 轮盘只读鼠标方向：保持 pointer-events:none，绝不阻断底层鼠标事件；
+   * 与 #weapon-swap-choice 不同，这里不抢指针焦点、不退出指针锁定。
+   * --qw-size 用 clamp(min(58vw,58vh)) 稳定尺寸：1280/900/620 视口都不溢出，
+   * 且不会随槽位文案长度变形（名称行强制省略号）。
+   */
+  #quick-wheel{ position:absolute; inset:0; display:none; align-items:center;
+    justify-content:center; pointer-events:none; z-index:18;
+    --qw-size:clamp(240px, min(58vw, 58vh), 520px);
+    --qw-r:calc(var(--qw-size) * 0.30); }
+  #quick-wheel.open{ display:flex; }
+  .qw-ring{ position:relative; width:var(--qw-size); height:var(--qw-size);
+    border-radius:50%; border:1px solid var(--rule);
+    background:radial-gradient(circle at 50% 42%, rgba(10,13,18,.80), rgba(10,13,18,.94) 68%);
+    box-shadow:0 0 0 6px rgba(10,13,18,.5), 0 26px 70px rgba(0,0,0,.6); }
+  .qw-ring::before{ content:''; position:absolute; inset:11%; border-radius:50%;
+    border:1px solid rgba(245,166,35,.22); }
+  .qw-ring::after{ content:''; position:absolute; inset:26%; border-radius:50%;
+    border:1px dashed rgba(139,147,163,.35); }
+  .qw-slot{ position:absolute; left:50%; top:50%;
+    width:calc(var(--qw-size) * 0.19); height:calc(var(--qw-size) * 0.19);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:2px; border:1px solid rgba(139,147,163,.5); background:rgba(10,13,18,.92);
+    border-radius:8px; color:var(--muted); opacity:.72;
+    transform:translate(-50%,-50%) rotate(calc(var(--i) * 72deg))
+      translateY(calc(var(--qw-r) * -1)) rotate(calc(var(--i) * -72deg));
+    transition:border-color .1s, box-shadow .1s, opacity .1s, color .1s; }
+  .qw-slot.empty{ border-style:dashed; }
+  .qw-slot.selected{ border-color:var(--amber); color:var(--amber); opacity:1;
+    box-shadow:0 0 0 1px rgba(245,166,35,.45), 0 0 18px rgba(245,166,35,.25); }
+  .qw-key{ position:absolute; top:2px; right:4px; font-size:calc(var(--qw-size) * 0.03);
+    color:var(--cyan); letter-spacing:0; }
+  .qw-icon{ width:82%; height:calc(var(--qw-size) * 0.068); display:flex;
+    align-items:center; justify-content:center; color:var(--cyan); max-width:90%; }
+  .qw-icon svg{ width:100%; height:100%; overflow:visible; }
+  .qw-name{ font-size:calc(var(--qw-size) * 0.034); letter-spacing:.04em;
+    max-width:calc(var(--qw-size) * 0.17); white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis; line-height:1.2; }
+  .qw-qty{ font-size:calc(var(--qw-size) * 0.03); color:var(--amber); }
+  .qw-center{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    text-align:center; width:calc(var(--qw-size) * 0.44); }
+  .qw-cancel{ font-size:calc(var(--qw-size) * 0.046); letter-spacing:.3em;
+    color:var(--muted); }
+  #quick-wheel.open .qw-cancel{ color:var(--amber); }
+  .qw-center-name{ font-size:calc(var(--qw-size) * 0.036); color:var(--ink);
+    margin-top:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #quick-wheel.open .qw-center-name:empty{ visibility:hidden; }
 
   /* 左下：护甲 + 生命。护甲在上、生命在下 —— 扣血顺序也是从上到下 */
   #status{ position:absolute; left:22px; bottom:22px; }
@@ -51,13 +102,35 @@
     letter-spacing:.06em; }
   #nade-box.empty .n{ color:var(--muted); }
 
-  /* 右下：弹药 */
-  #ammo-box{ position:absolute; right:24px; bottom:20px; text-align:right; }
+  /* 携带栏状态条：数量 / 上限 / 总价值。装满时整行变红 ——
+     「还能不能捡」不靠玩家心算 4 格。 */
+  #carry-box{ position:absolute; right:24px; bottom:164px; text-align:right;
+    font-size:.7rem; letter-spacing:.14em; color:var(--muted); }
+  .carry-label{ display:block; font-size:.58rem; letter-spacing:.18em; color:var(--amber); }
+  .carry-count{ font-size:1.1rem; font-weight:700; color:var(--ink); letter-spacing:.06em; }
+  #carry-current{ color:var(--amber); }
+  .carry-value{ font-size:.62rem; letter-spacing:.1em; color:var(--cyan); margin-top:3px; }
+  #carry-box.full .carry-count{ color:var(--threat); }
+  #carry-box.full #carry-current{ color:var(--threat); }
+
+  /* 右下：弹药。手枪与两个主武器槽固定横向排列，非当前槽降低视觉权重。 */
+  #ammo-box{ position:absolute; right:24px; bottom:20px; display:flex; gap:18px;
+    align-items:flex-end; text-align:right; }
+  .ammo-slot{ min-width:150px; text-align:right; opacity:.5; transition:opacity .2s; }
+  .ammo-slot.active{ opacity:1; }
+  .weapon-name{ font-size:.76rem; letter-spacing:.18em; color:var(--amber); }
+  .ammo-line{ display:flex; align-items:baseline; justify-content:flex-end; gap:6px; margin-top:2px; }
+  .ammo{ font-size:2.5rem; font-weight:700; line-height:1; }
+  .ammo-reserve{ font-size:1rem; color:var(--muted); }
+  .ammo-reserve::before{ content:'/ '; }
+  .reload{ display:none; width:150px; height:4px; background:rgba(0,0,0,.6);
+    border:1px solid var(--rule); margin-top:8px; margin-left:auto; }
+  .reload-bar{ height:100%; width:0%; background:var(--amber); }
+  /* 旧 ID 保留给槽0，避免已有测试和外部调试脚本失效。 */
   #weapon-name{ font-size:.76rem; letter-spacing:.18em; color:var(--amber); }
   #ammo-line{ display:flex; align-items:baseline; justify-content:flex-end; gap:6px; margin-top:2px; }
   #ammo{ font-size:2.5rem; font-weight:700; line-height:1; }
   #ammo-reserve{ font-size:1rem; color:var(--muted); }
-  #ammo-reserve::before{ content:'/ '; }
   #reload{ display:none; width:150px; height:4px; background:rgba(0,0,0,.6);
     border:1px solid var(--rule); margin-top:8px; margin-left:auto; }
   #reload-bar{ height:100%; width:0%; background:var(--amber); }
@@ -133,6 +206,91 @@
     font-size:.74rem; letter-spacing:.1em; }
   #prompt b{ color:var(--amber); }
 
+  #weapon-swap-choice{ position:absolute; inset:0; z-index:20; display:none; align-items:center;
+    justify-content:center; pointer-events:auto; background:rgba(8,10,14,.78); }
+  .swap-panel{ width:min(360px,calc(100vw - 32px)); padding:22px; border:1px solid var(--amber);
+    background:#101720; box-shadow:0 18px 55px rgba(0,0,0,.65); }
+  .swap-panel h3{ margin:0 0 16px; color:var(--amber); font-size:.9rem; letter-spacing:.14em; }
+  .swap-panel button{ display:block; width:100%; margin-top:8px; padding:10px 12px; border:1px solid var(--rule);
+    background:rgba(0,0,0,.25); color:var(--ink); font:inherit; text-align:left; cursor:pointer; }
+  .swap-panel button:hover{ border-color:var(--amber); color:var(--amber); }
+  .swap-hint{ margin-top:14px; color:var(--muted); font-size:.62rem; letter-spacing:.08em; }
+
+  /**
+   * 局内背包（Tab / 容器 E）：Equipment / Backpack / Quick Use / Container 四栏并列，
+   * 打开容器后左侧容器栏是真实物品格（本项目数据），其余玩家栏保持只读/受控转移。
+   * 世界不暂停，面板自己必须恢复 pointer-events（#ui 全局 none）。
+   * 尺寸：--raid-panel 用 min() 收敛宽度；栏轨道 repeat(4, minmax(0,1fr))
+   * 稳定四列（数据不足时也是四列，不随内容重排）；格子 minmax+clamp 稳定。
+   * 物品名强制 white-space:nowrap + ellipsis，绝不撑坏格子。
+   */
+  #raid-inventory{ position:absolute; inset:0; z-index:19; display:none;
+    flex-direction:column; align-items:center; justify-content:center;
+    pointer-events:auto; background:rgba(8,10,14,.82);
+    --raid-panel:min(1080px, calc(100vw - 28px)); }
+  #raid-inventory.open{ display:flex; }
+  .raid-cols{ display:grid; grid-template-columns:repeat(4, minmax(0, 1fr));
+    width:var(--raid-panel); max-height:calc(76vh - 60px); gap:10px; }
+  .raid-col{ display:flex; flex-direction:column; min-width:0; padding:10px;
+    border:1px solid var(--rule); background:rgba(10,13,18,.9); }
+  .raid-col-title{ display:flex; justify-content:space-between; align-items:baseline;
+    gap:8px; margin-bottom:8px; font-size:.7rem; letter-spacing:.16em;
+    color:var(--amber); min-width:0; }
+  .raid-col-title em{ color:var(--muted); font-style:normal; font-size:.52rem;
+    letter-spacing:.14em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .raid-col-title .raid-count{ color:var(--cyan); white-space:nowrap; }
+  .raid-cells{ display:grid; grid-template-columns:repeat(auto-fill,
+    minmax(clamp(46px, 12vw, 64px), 1fr)); gap:6px; align-content:start;
+    overflow-y:auto; min-height:0; }
+  .raid-cells-equipment{ grid-template-columns:repeat(2, minmax(0, 1fr)); }
+  .raid-cells-quick{ grid-template-columns:repeat(5, minmax(0, 1fr)); }
+  .raid-cell-tag{ grid-column:span 2; font-size:.54rem; color:var(--muted);
+    letter-spacing:.12em; margin-top:2px; }
+  .raid-cell{ min-width:0; display:flex; flex-direction:column; align-items:center;
+    gap:2px; padding:6px 4px; border:1px solid rgba(139,147,163,.5);
+    background:rgba(0,0,0,.25); cursor:pointer; }
+  .raid-cell.empty{ border-style:dashed; cursor:default; opacity:.6; }
+  .raid-cell.selected{ border-color:var(--amber); opacity:1;
+    box-shadow:0 0 0 1px rgba(245,166,35,.45), 0 0 14px rgba(245,166,35,.22); }
+  .raid-cell-placeholder{ grid-column:1 / -1; }
+  .raid-cell-name{ max-width:100%; font-size:.62rem; color:var(--ink);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.2; }
+  .raid-cell-qty{ font-size:.66rem; color:var(--amber); }
+  .raid-cell-sub{ font-size:.54rem; color:var(--muted);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+  .raid-detail{ width:var(--raid-panel); margin-top:10px; padding:10px 12px;
+    border:1px solid var(--cyan); background:rgba(10,13,18,.92); min-width:0;
+    display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; font-size:.72rem; }
+  .raid-detail-name{ color:var(--ink); font-size:.8rem; }
+  .raid-detail-line{ color:var(--muted); }
+  .raid-detail-note{ color:var(--threat); }
+  .raid-detail-actions{ display:flex; gap:8px; margin-left:auto; }
+  .raid-detail button{ padding:6px 14px; border:1px solid var(--rule);
+    background:rgba(0,0,0,.35); color:var(--ink); font:inherit; cursor:pointer; }
+  .raid-detail button:hover{ border-color:var(--amber); color:var(--amber); }
+  .raid-hints{ width:var(--raid-panel); margin-top:8px; text-align:center;
+    font-size:.68rem; color:var(--muted); letter-spacing:.1em;
+    display:flex; align-items:center; justify-content:center; gap:10px; }
+  .raid-hints b{ color:var(--amber); }
+  /* 容器栏高亮（与战利品边条同源的青色）与关闭按钮 */
+  .raid-col-container{ border-color:rgba(76,201,240,.45); }
+  .raid-close-btn{ padding:4px 12px; border:1px solid var(--rule);
+    background:rgba(0,0,0,.35); color:var(--ink); font:inherit;
+    font-size:.68rem; letter-spacing:.1em; cursor:pointer; }
+  .raid-close-btn:hover{ border-color:var(--amber); color:var(--amber); }
+  .raid-close-hint{ color:var(--muted); font-size:.6rem; }
+  @media (max-width:900px){
+    .raid-cols{ gap:8px; }
+    .raid-cells{ grid-template-columns:repeat(auto-fill,
+      minmax(clamp(40px, 11vw, 56px), 1fr)); }
+  }
+  @media (max-width:620px){
+    #raid-inventory{ overflow-y:auto; justify-content:flex-start; padding:12px 0; }
+    .raid-cols{ grid-template-columns:1fr; max-height:none; }
+    .raid-detail{ flex-direction:column; align-items:flex-start; }
+    .raid-detail-actions{ margin-left:0; }
+  }
+
   /* toast */
   #toast{ position:absolute; left:50%; top:14%; transform:translateX(-50%);
     font-size:.82rem; letter-spacing:.12em; color:var(--amber);
@@ -163,6 +321,14 @@
     text-align:center; line-height:2; }
   #banner-body b{ color:var(--ink); }
   #banner-body .grade{ color:var(--amber); font-size:1.5rem; }
+  /* 结算物品清单：每件战利品一枚芯片，绿色=带回入库，红色=死亡丢失 */
+  #banner-loot{ display:none; flex-wrap:wrap; justify-content:center; gap:8px;
+    max-width:560px; }
+  #banner-loot .loot-chip{ padding:3px 12px; border:1px solid rgba(63,185,111,.35);
+    background:rgba(63,185,111,.1); border-radius:4px; font-size:.8rem;
+    color:var(--good); letter-spacing:.08em; }
+  #banner-loot .loot-chip.lost{ border-color:rgba(229,72,77,.45);
+    background:rgba(229,72,77,.12); color:var(--threat); }
   .hint-key{ color:var(--muted); font-size:.72rem; }
 
   #hint{ position:absolute; inset:0; display:flex; align-items:center;
@@ -173,11 +339,25 @@
   #hint .small{ font-size:.72rem; color:var(--muted); letter-spacing:.12em; }
 
   /* ══ 任务选择屏（开局第一屏）══════════════════════════════════════ */
-  #missions{ position:absolute; inset:0; display:flex; align-items:center;
-    justify-content:center; pointer-events:auto; overflow-y:auto; overflow-x:hidden;
-    padding:22px 0;
+  #missions{ position:absolute; inset:0; display:flex; flex-direction:column;
+    pointer-events:auto; overflow-y:auto; overflow-x:hidden;
+    padding:0;
     background:radial-gradient(1100px 640px at 50% -8%, #18202e 0%, rgba(8,10,14,.96) 58%),
        rgba(8,10,14,.97); }
+  
+  /* 中枢导航标签 */
+  .hub-tabs{ display:flex; gap:0; border-bottom:1px solid var(--rule);
+    background:rgba(10,13,18,.88); padding:0 max(22px, calc((100vw - 1080px)/2)); }
+  .hub-tabs button{ padding:14px 28px; border:0; background:transparent;
+    color:var(--muted); font-family:var(--mono); font-size:.72rem;
+    letter-spacing:.18em; cursor:pointer; border-bottom:2px solid transparent;
+    transition:all .2s; }
+  .hub-tabs button:hover{ color:var(--ink); background:rgba(245,166,35,.08); }
+  .hub-tabs button.active{ color:var(--amber); border-bottom-color:var(--amber); }
+  
+  .hub-page{ display:none; flex:1; align-items:center; justify-content:center;
+    padding:22px 0; overflow-y:auto; }
+  .hub-page.active{ display:flex; }
   @media (min-width:900px){ #ms-grid{ grid-template-columns:repeat(4,1fr); gap:12px; } }
   #missions::after{ content:''; position:absolute; inset:0; pointer-events:none;
     background:linear-gradient(rgba(255,255,255,.035) 0 1px, transparent 1px 4px);
@@ -227,27 +407,6 @@
   .ms-keys{ margin-top:18px; text-align:center; font-size:.62rem; color:var(--muted);
     letter-spacing:.18em; }
   .ms-keys b{ color:var(--ink); }
-
-  /**
-   * 开局装备条：任务选择第一屏就给出「一把枪 + 一枚手雷」。
-   * 点卡片循环切换；进游戏左键射击、3 投掷，不需要再进门捡。
-   */
-  #ms-kit{ display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:16px; }
-  .ms-kit-card{ border:1px solid var(--rule); background:#0d1118; padding:12px 14px;
-    cursor:pointer; display:grid; grid-template-columns:96px 1fr; gap:12px; align-items:center;
-    transition:border-color .15s, transform .15s, box-shadow .15s; }
-  .ms-kit-card:hover{ transform:translateY(-2px); border-color:var(--amber);
-    box-shadow:0 10px 28px rgba(0,0,0,.45); }
-  .ms-kit-card.on{ border-color:rgba(245,166,35,.75);
-    box-shadow:inset 0 0 0 1px rgba(245,166,35,.28); }
-  .ms-kit-art{ height:48px; display:flex; align-items:center; }
-  .ms-kit-art svg{ width:100%; height:100%; overflow:visible;
-    filter:drop-shadow(0 2px 3px rgba(0,0,0,.6)); }
-  .ms-kit-k{ font-size:.52rem; letter-spacing:.22em; color:var(--cyan); }
-  .ms-kit-name{ font-size:.88rem; color:var(--amber); letter-spacing:.12em;
-    font-weight:700; margin-top:3px; }
-  .ms-kit-d{ font-size:.62rem; color:var(--muted); margin-top:4px; line-height:1.55; }
-  .ms-kit-hint{ font-size:.56rem; letter-spacing:.16em; color:var(--ink); margin-top:6px; }
   .loadout-grid.guns3{ grid-template-columns:repeat(3,1fr); }
 
   /* ══ 任务简报（开局界面）══════════════════════════════════════════ */
@@ -337,13 +496,11 @@
   .legend i{ width:10px; height:10px; display:inline-block;
     border:1px solid rgba(255,255,255,.22); }
 
-  /* 难度选择 */
-  #diffs{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px;
+  /* 难度展示（单一标准难度，只读信息卡，不再可选） */
+  #diffs{ display:grid; grid-template-columns:1fr; gap:10px;
     margin-top:4px; }
   .diff{ border:1px solid var(--rule); background:rgba(0,0,0,.35);
-    padding:11px 12px; cursor:pointer; transition:border-color .15s,background .15s; }
-  .diff:hover{ background:rgba(255,255,255,.05); }
-  .diff.on{ border-color:var(--amber); background:rgba(245,166,35,.1); }
+    padding:11px 12px; }
   .diff .dn{ font-size:.86rem; font-weight:700; letter-spacing:.14em; }
   .diff .ds{ font-size:.56rem; letter-spacing:.2em; color:var(--muted); margin-top:2px; }
   .diff .dd{ font-size:.66rem; line-height:1.65; color:var(--muted); margin-top:7px; }
@@ -372,6 +529,467 @@
     background:rgba(120,20,24,.92); border:1px solid var(--threat);
     color:#ffe; padding:12px 14px; font-size:.68rem; line-height:1.6;
     white-space:pre-wrap; max-height:48vh; overflow:auto; }
+
+  /* ══ 装备整备面板 ═════════════════════════════════════════════════ */
+  #equipment{ display:none; position:fixed; inset:0; background:var(--bg);
+    pointer-events:all; overflow:hidden; }
+  #equipment.active{ display:flex; }
+  
+  .eq-container{ display:flex; width:100%; height:100%; }
+  
+  /* 左侧：3D 角色预览区 */
+  .eq-preview{ flex:0 0 26%; display:flex; flex-direction:column;
+    border-right:1px solid var(--rule); background:rgba(8,10,14,.45); }
+  .eq-preview-top{ padding:20px 24px; border-bottom:1px solid var(--rule); }
+  .eq-preview-top h2{ font-size:1.1rem; letter-spacing:.18em; color:var(--amber); }
+  .eq-preview-top .sub{ font-size:.62rem; color:var(--muted); margin-top:4px;
+    letter-spacing:.12em; }
+  
+  .eq-preview-3d{ flex:1; position:relative; display:flex; align-items:center;
+    justify-content:center; }
+  #eq-canvas{ display:block; width:100%; height:100%; }
+  
+  .eq-preview-controls{ padding:16px 24px; border-top:1px solid var(--rule);
+    font-size:.62rem; color:var(--muted); }
+  .eq-preview-controls .hint{ margin-bottom:8px; letter-spacing:.08em; }
+  
+  .eq-stats{ display:grid; grid-template-columns:1fr 1fr; gap:8px 14px;
+    margin-top:12px; }
+  .eq-stat{ display:flex; justify-content:space-between; }
+  .eq-stat .k{ color:var(--muted); font-size:.6rem; letter-spacing:.08em; }
+  .eq-stat .v{ color:var(--ink); font-size:.7rem; font-weight:600; }
+  
+  .eq-tendencies{ margin-top:14px; }
+  .eq-tend-row{ display:flex; justify-content:space-between; align-items:center;
+    margin-bottom:6px; }
+  .eq-tend-row .k{ color:var(--muted); font-size:.6rem; letter-spacing:.08em;
+    width:60px; }
+  .eq-tend-bar{ flex:1; height:6px; background:rgba(0,0,0,.5);
+    border:1px solid var(--rule); margin:0 8px; }
+  .eq-tend-fill{ height:100%; background:var(--amber); transition:width .25s; }
+  .eq-tend-row .v{ color:var(--ink); font-size:.65rem; width:30px;
+    text-align:right; }
+  
+  /* 中间：装备选择区 */
+  .eq-main{ flex:1; display:flex; flex-direction:column; overflow:hidden; }
+  .eq-main-top{ padding:20px 28px; border-bottom:1px solid var(--rule); }
+  .eq-main-top h3{ font-size:.92rem; letter-spacing:.16em; color:var(--amber); }
+  .eq-main-top .tabs{ display:flex; gap:12px; margin-top:12px; }
+  .eq-tab{ padding:8px 16px; border:1px solid var(--rule); background:rgba(0,0,0,.2);
+    cursor:pointer; font-size:.68rem; letter-spacing:.12em; color:var(--muted);
+    transition:all .2s; }
+  .eq-tab:hover{ border-color:rgba(245,166,35,.4); background:rgba(245,166,35,.08); }
+  .eq-tab.active{ border-color:var(--amber); background:rgba(245,166,35,.15);
+    color:var(--amber); }
+  
+  .eq-main-body{ flex:1; padding:20px 28px; overflow-y:auto; }
+  
+  /* 枪械选择 */
+  .eq-weapon-grid{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .eq-weapon-card{ border:1px solid var(--rule); padding:16px 14px;
+    background:rgba(0,0,0,.25); cursor:pointer; transition:all .2s; }
+  .eq-weapon-hint-global{ grid-column:1 / -1; padding:8px 10px; border-left:2px solid var(--cyan);
+    color:var(--muted); font-size:.64rem; letter-spacing:.08em; background:rgba(76,201,240,.05); }
+  .eq-weapon-hint-global strong{ color:var(--good); font-weight:600; }
+  .eq-weapon-card:hover{ border-color:rgba(245,166,35,.45);
+    background:rgba(245,166,35,.08); transform:translateY(-2px); }
+  .eq-weapon-card.selected{ border-color:var(--amber);
+    background:rgba(245,166,35,.12); }
+  .eq-weapon-card h4{ font-size:.82rem; color:var(--amber); margin-bottom:8px;
+    letter-spacing:.1em; }
+  .eq-weapon-stats{ display:grid; grid-template-columns:1fr 1fr; gap:6px;
+    font-size:.62rem; margin-top:8px; }
+  .eq-weapon-stat{ display:flex; justify-content:space-between; }
+  .eq-weapon-stat .k{ color:var(--muted); }
+  .eq-weapon-stat .v{ color:var(--ink); }
+  .eq-weapon-hint{ margin-top:10px; padding-top:8px; border-top:1px solid var(--rule);
+    font-size:.58rem; color:var(--cyan); letter-spacing:.08em; }
+  
+  /* 枪械详情（点击后展开） */
+  .eq-weapon-detail{ margin-top:20px; border:1px solid var(--amber);
+    background:rgba(245,166,35,.05); padding:18px 16px; }
+  .eq-weapon-detail-head{ display:flex; justify-content:space-between;
+    align-items:center; margin-bottom:14px; }
+  .eq-weapon-detail-head h4{ font-size:.88rem; color:var(--amber);
+    letter-spacing:.12em; }
+  .eq-weapon-detail-back{ font-size:.62rem; color:var(--cyan); cursor:pointer;
+    letter-spacing:.08em; }
+  .eq-weapon-detail-back:hover{ text-decoration:underline; }
+  
+  .eq-slots{ display:grid; grid-template-columns:1fr 1fr; gap:10px;
+    margin-bottom:16px; }
+  .eq-slot{ border:1px solid var(--rule); padding:12px 10px;
+    background:rgba(0,0,0,.3); }
+  .eq-slot-label{ font-size:.6rem; color:var(--muted); letter-spacing:.12em;
+    margin-bottom:6px; }
+  .eq-slot-current{ font-size:.7rem; color:var(--ink); }
+  .eq-slot-current.empty{ color:var(--muted); font-style:italic; }
+  
+  .eq-attachments{ margin-top:14px; }
+  .eq-attachments h5{ font-size:.72rem; color:var(--amber); margin-bottom:10px;
+    letter-spacing:.1em; }
+  .eq-attachment{ border:1px solid var(--rule); padding:10px 12px;
+    margin-bottom:8px; background:rgba(0,0,0,.2); display:flex;
+    justify-content:space-between; align-items:center; }
+  .eq-attachment-info h6{ font-size:.68rem; color:var(--ink); margin-bottom:4px;
+    letter-spacing:.08em; }
+  .eq-attachment-info p{ font-size:.58rem; color:var(--muted); line-height:1.5; }
+  .eq-attachment-btn{ padding:6px 14px; border:1px solid var(--cyan);
+    background:rgba(76,201,240,.08); color:var(--cyan); font-size:.6rem;
+    letter-spacing:.12em; cursor:pointer; transition:all .2s; }
+  .eq-attachment-btn:hover{ background:rgba(76,201,240,.18); }
+  .eq-attachment-btn.installed{ border-color:var(--good); background:rgba(63,185,111,.08);
+    color:var(--good); cursor:default; }
+  
+  /* 防护装备选择 */
+  .eq-armor-grid{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }
+  .eq-armor-card{ position:relative; border:1px solid var(--rule); padding:16px 12px;
+    background:rgba(0,0,0,.25); cursor:pointer; transition:all .2s;
+    text-align:center; }
+  .eq-weapon-slot-badge{ left:10px; top:10px; color:var(--good); border:1px solid rgba(63,185,111,.45);
+    padding:3px 6px; letter-spacing:.08em; }
+  .eq-armor-card:hover{ border-color:rgba(245,166,35,.45);
+    background:rgba(245,166,35,.08); transform:translateY(-2px); }
+  .eq-armor-card.selected{ border-color:var(--amber);
+    background:rgba(245,166,35,.12); }
+  .eq-armor-card h4{ font-size:.78rem; color:var(--amber); margin-bottom:4px;
+    letter-spacing:.1em; }
+  .eq-armor-card .en{ font-size:.58rem; color:var(--muted); margin-bottom:10px;
+    letter-spacing:.14em; }
+  .eq-armor-card p{ font-size:.6rem; color:var(--ink); line-height:1.6;
+    margin-top:8px; }
+  .eq-armor-effects{ display:grid; grid-template-columns:1fr 1fr; gap:6px;
+    margin-top:10px; font-size:.6rem; }
+  .eq-armor-effect{ display:flex; justify-content:space-between; }
+  .eq-armor-effect .k{ color:var(--muted); }
+  .eq-armor-effect .v{ color:var(--ink); }
+  
+  /* 手榴弹选择 */
+  .eq-grenade-grid{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .eq-grenade-card{ border:2px solid var(--rule); padding:18px 14px;
+    background:rgba(0,0,0,.25); cursor:pointer; transition:all .2s;
+    text-align:center; }
+  .eq-grenade-card:hover{ transform:translateY(-2px); }
+  .eq-grenade-card.selected{ background:rgba(0,0,0,.4); }
+  .eq-grenade-card h4{ font-size:.82rem; margin-bottom:4px; letter-spacing:.1em; }
+  .eq-grenade-card .en{ font-size:.58rem; color:var(--muted); margin-bottom:8px;
+    letter-spacing:.14em; }
+  .eq-grenade-card .count{ font-size:1.2rem; font-weight:700; margin:10px 0; }
+  .eq-grenade-card p{ font-size:.62rem; line-height:1.6; margin-top:8px; }
+
+  /* 中栏：携带背包 */
+  .eq-inventory{ flex:0 0 22%; min-width:220px; max-width:360px;
+    border-left:1px solid var(--rule); background:rgba(8,10,14,.45);
+    display:flex; flex-direction:column; overflow:hidden; }
+  .eq-inv-head{ padding:20px 20px; border-bottom:1px solid var(--rule); }
+  .eq-inv-head h3{ font-size:.88rem; letter-spacing:.14em; color:var(--amber); }
+  .eq-inv-head .sub{ font-size:.58rem; color:var(--muted); margin-top:4px;
+    letter-spacing:.12em; }
+  .eq-inv-body{ flex:1; padding:18px 20px; overflow-y:auto; }
+  .eq-inv-row{ margin-bottom:14px; }
+  .eq-inv-label{ font-size:.6rem; color:var(--muted); letter-spacing:.12em;
+    margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid var(--rule); }
+  .eq-inv-slot{ position:relative; min-height:42px; border:1px solid var(--rule);
+    background:rgba(0,0,0,.3); padding:8px 10px; display:flex; align-items:center; }
+  .eq-inv-slot-placeholder{ font-size:.58rem; color:var(--muted); font-style:italic;
+    line-height:1.4; letter-spacing:.04em; }
+  .eq-inv-slot-group{ display:flex; gap:6px; }
+  .eq-inv-slot-group .eq-inv-slot{ flex:1; min-width:0; }
+  /* 已占槽（批 2b-2 点击放置/卸下）：描边点亮 + 悬停红色提示可卸下 */
+  .eq-inv-slot.filled{ border-color:rgba(245,166,35,.35);
+    background:rgba(245,166,35,.06); cursor:pointer; }
+  .eq-inv-slot.filled:hover{ border-color:rgba(232,84,77,.55);
+    background:rgba(232,84,77,.08); }
+  .eq-inv-slot-locked{ opacity:.6; cursor:default !important; }
+  .eq-inv-item{ display:flex; align-items:center; justify-content:space-between;
+    width:100%; min-width:0; gap:6px; }
+  .eq-inv-item-name{ font-size:.62rem; color:var(--ink); white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis; }
+  .eq-inv-item-qty{ font-size:.62rem; color:var(--amber); font-weight:700;
+    white-space:nowrap; }
+  /* ── 批 2c-1：携带背包拖拽视觉（状态机在 equipment.js，#eq-inventory 一次委托）。
+     拖拽期间数据不移动（§9.4.3）：源槽只做视觉提起，ghost 是跟随光标的纯视觉影子。 */
+  .eq-inv-slot.dragging{ opacity:.35; }
+  .eq-inv-slot.drop-ok,.eq-inv-slot.drop-swap,.eq-inv-slot.drop-stack{
+    border-color:var(--cyan); box-shadow:0 0 0 1px rgba(76,201,240,.6) inset; }
+  .eq-inv-slot.drop-bad{ border-color:var(--threat);
+    box-shadow:0 0 0 1px rgba(229,72,77,.65) inset; }
+  .eq-inv-slot.drop-candidate{ border-color:var(--cyan); border-style:dashed;
+    box-shadow:0 0 0 1px rgba(76,201,240,.35) inset; }
+  .eq-inv-slot.drop-swap::after{ content:'⇄'; position:absolute; top:2px; right:5px;
+    color:var(--cyan); font-size:.72rem; font-weight:700; }
+  .eq-inv-slot.drop-stack::after{ content:var(--stack-n,'+'); position:absolute;
+    top:2px; right:5px; color:var(--cyan); font-size:.66rem; font-weight:700; }
+  .inv-drag-ghost{ position:fixed; z-index:9999; pointer-events:none; min-height:42px;
+    min-width:150px; border:1px solid rgba(245,166,35,.55); background:rgba(12,16,22,.96);
+    padding:8px 10px; display:flex; align-items:center;
+    box-shadow:0 14px 34px rgba(0,0,0,.55); transform:translate(-50%,-50%) rotate(2deg) scale(1.04); }
+
+  /* 右侧：装备摘要 */
+  .eq-summary{ flex:0 0 26%; border-left:1px solid var(--rule);
+    background:rgba(8,10,14,.45); display:flex; flex-direction:column; }
+  .eq-summary-top{ padding:20px 20px; border-bottom:1px solid var(--rule); }
+  .eq-summary-top h3{ font-size:.88rem; letter-spacing:.14em; color:var(--amber); }
+  
+  .eq-summary-body{ flex:1; padding:18px 20px; overflow-y:auto; }
+  .eq-summary-section{ margin-bottom:20px; }
+  .eq-summary-section h4{ font-size:.7rem; color:var(--muted);
+    letter-spacing:.12em; margin-bottom:8px; border-bottom:1px solid var(--rule);
+    padding-bottom:4px; }
+  .eq-summary-item{ font-size:.65rem; color:var(--ink); margin-bottom:6px;
+    line-height:1.6; }
+  .eq-summary-item .label{ color:var(--muted); }
+  .eq-summary-item .value{ color:var(--amber); }
+  .eq-summary-slots{ display:flex; justify-content:space-between; margin-top:8px;
+    padding:8px 10px; border:1px solid var(--rule); background:rgba(0,0,0,.25); }
+  
+  .eq-summary-footer{ padding:18px 20px; border-top:1px solid var(--rule); }
+  .eq-summary-actions{ display:flex; flex-direction:column; gap:10px; }
+  .eq-btn{ padding:12px; border:1px solid var(--rule); background:rgba(0,0,0,.3);
+    color:var(--ink); font-family:var(--mono); font-size:.7rem;
+    letter-spacing:.14em; cursor:pointer; transition:all .2s; text-align:center; }
+  .eq-btn:hover{ border-color:rgba(245,166,35,.5);
+    background:rgba(245,166,35,.1); }
+  .eq-btn.primary{ background:var(--amber); color:#12161d; border-color:var(--amber);
+    font-weight:700; }
+  .eq-btn.primary:hover{ filter:brightness(1.12); }
+
+  /* 前置流程升级：让实体预览成为每个选择的视觉锚点 */
+  .eq-preview-3d{ background:radial-gradient(ellipse at 50% 55%, rgba(76,201,240,.08), transparent 58%), #0a0e14; }
+  .eq-preview-3d::before{ content:''; position:absolute; inset:14px; border:1px solid rgba(76,201,240,.16); pointer-events:none; }
+  .eq-scanline{ position:absolute; inset:0; pointer-events:none; opacity:.22; background:linear-gradient(180deg, transparent 0 48%, rgba(76,201,240,.18) 50%, transparent 52%); background-size:100% 12px; }
+  .eq-badge{ position:absolute; left:18px; top:16px; z-index:1; color:var(--cyan); font-size:.55rem; letter-spacing:.2em; }
+  .eq-preview-tag{ position:absolute; right:18px; bottom:16px; display:flex; flex-direction:column; align-items:flex-end; gap:3px; z-index:1; }
+  .eq-preview-tag span{ color:var(--muted); font-size:.52rem; letter-spacing:.2em; }
+  .eq-preview-tag b{ color:var(--amber); font-size:.62rem; letter-spacing:.1em; }
+  .eq-card-topline{ display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+  .eq-code{ color:var(--muted); font-size:.54rem; letter-spacing:.18em; }
+  .eq-state{ color:var(--good); font-size:.54rem; letter-spacing:.1em; }
+  .eq-weapon-art{ height:62px; display:flex; align-items:center; margin:0 -4px 6px; padding:4px 10px; background:rgba(76,201,240,.04); border-top:1px solid rgba(76,201,240,.12); border-bottom:1px solid rgba(76,201,240,.12); }
+  .loadout-glyph{ width:100%; height:100%; display:block; filter:drop-shadow(0 3px 4px rgba(0,0,0,.55)); }
+  .eq-armor-figure{ height:74px; position:relative; margin:-2px 0 10px; background:radial-gradient(ellipse at 50% 55%, rgba(245,166,35,.12), transparent 64%); }
+  .eq-armor-figure span{ position:absolute; display:block; border:1px solid rgba(245,166,35,.7); background:rgba(245,166,35,.2); }
+  .eq-armor-figure .armor-head{ width:20px; height:20px; left:calc(50% - 10px); top:6px; }
+  .eq-armor-figure .armor-body{ width:34px; height:38px; left:calc(50% - 17px); top:27px; }
+  .eq-armor-figure .armor-shoulder{ width:12px; height:22px; top:31px; }
+  .eq-armor-figure .left{ left:calc(50% - 29px); }.eq-armor-figure .right{ right:calc(50% - 29px); }
+  .eq-grenade-art{ height:74px; display:flex; align-items:center; justify-content:center; margin:-2px 0 10px; background:rgba(76,201,240,.04); }
+  .eq-grenade-art .loadout-glyph{ width:78%; }
+  .eq-summary-section{ cursor:pointer; transition:background .15s, border-color .15s; padding:8px; border:1px solid transparent; }
+  .eq-summary-section:hover{ border-color:rgba(76,201,240,.35); background:rgba(76,201,240,.04); }
+  .eq-summary-section h4{ display:flex; justify-content:space-between; }
+  .eq-summary-section h4 span{ font-size:.48rem; color:var(--muted); font-weight:400; letter-spacing:.1em; }
+  .eq-summary-visual{ display:flex; align-items:center; gap:10px; min-height:52px; }
+  .eq-summary-visual > div{ min-width:0; }
+  .eq-summary-visual b{ display:block; color:var(--ink); font-size:.68rem; font-weight:600; }
+  .eq-summary-visual small{ display:block; margin-top:4px; color:var(--muted); font-size:.56rem; line-height:1.5; }
+
+  .inv-section{ margin-bottom:16px; }
+  .inv-section-title{ font-size:.62rem; color:var(--muted); letter-spacing:.14em;
+    margin-bottom:8px; border-bottom:1px solid var(--rule); padding-bottom:5px;
+    display:flex; justify-content:space-between; }
+  .inv-section-title span{ opacity:.72; font-size:.5rem; }
+  .inv-grid{ display:grid; grid-template-columns:repeat(2, 1fr); gap:8px; }
+  .inv-slot{ position:relative; min-height:58px; border:1px solid var(--rule);
+    background:rgba(0,0,0,.3); padding:8px 9px; cursor:grab; user-select:none;
+    touch-action:none; transition:border-color .12s, background .12s, opacity .12s; }
+  .inv-slot.empty{ border-style:dashed; background:rgba(0,0,0,.15); }
+  .inv-slot.locked{ cursor:default; background:rgba(63,185,111,.05);
+    border-color:rgba(63,185,111,.3); }
+  .inv-slot.inv-armor.empty{ border-color:rgba(245,166,35,.45); }
+  .inv-item-kind{ font-size:.5rem; color:var(--muted); letter-spacing:.12em; margin-bottom:3px; }
+  .inv-item-name{ font-size:.66rem; color:var(--ink); font-weight:600; line-height:1.35; }
+  .inv-item-meta{ font-size:.54rem; color:var(--muted); margin-top:4px; line-height:1.4; }
+  .inv-item-meta .risk{ color:var(--threat); }
+  .inv-item-meta .safe{ color:var(--good); }
+  .inv-empty-text{ color:var(--muted); font-weight:400; font-style:italic; font-size:.58rem; }
+  /* 拖拽瞬态：源格只做视觉提起（数据不移动，§9.4.3） */
+  .inv-slot.drag-source,.eq-armor-card.drag-source,.eq-grenade-card.drag-source{ opacity:.35 !important; }
+  .eq-drag-ghost{ position:fixed; z-index:9999; pointer-events:none; opacity:.94;
+    transform:rotate(2deg) scale(1.04); box-shadow:0 14px 34px rgba(0,0,0,.55); }
+  body.eq-dragging .inv-slot,body.eq-dragging .eq-armor-card,body.eq-dragging .eq-grenade-card,body.eq-dragging .eq-inv-slot{ cursor:grabbing; }
+  /* §4.2 四种拖拽反馈 */
+  .inv-slot.drop-ok,.inv-slot.drop-swap,.inv-slot.drop-stack{
+    border-color:var(--cyan); box-shadow:0 0 0 1px rgba(76,201,240,.6) inset; }
+  .inv-slot.drop-swap::after{ content:'⇄'; position:absolute; top:2px; right:5px;
+    color:var(--cyan); font-size:.72rem; font-weight:700; }
+  .inv-slot.drop-stack::after{ content:var(--stack-n,'+'); position:absolute; top:2px; right:5px;
+    color:var(--cyan); font-size:.66rem; font-weight:700; }
+  .inv-slot.drop-bad{ border-color:var(--threat);
+    box-shadow:0 0 0 1px rgba(229,72,77,.65) inset; }
+  .inv-slot.drop-candidate{ border-color:var(--cyan); border-style:dashed;
+    box-shadow:0 0 0 1px rgba(76,201,240,.35) inset; }
+
+  /* 风险提示区块 */
+  .eq-risk-notice{ margin-top:24px; padding:14px 12px; background:rgba(229,72,77,.08);
+    border:1px solid rgba(229,72,77,.35); border-left-width:3px; }
+  .eq-risk-title{ font-size:.68rem; color:var(--threat); letter-spacing:.12em;
+    font-weight:600; margin-bottom:8px; }
+  .eq-risk-row{ font-size:.62rem; line-height:1.75; letter-spacing:.04em; }
+  .eq-risk-row.lose{ color:var(--threat); }
+  .eq-risk-row.keep{ color:var(--good); margin-top:4px; }
+  .summary-art{ flex:0 0 74px; width:74px; height:40px; display:flex; align-items:center; justify-content:center; color:var(--amber); font-size:1.6rem; }
+  .summary-art .loadout-glyph{ width:100%; height:100%; }
+  .armor-art{ color:var(--good); border:1px solid rgba(63,185,111,.35); font-size:1.25rem; }
+  .grenade-art{ color:var(--cyan); border:1px solid rgba(76,201,240,.35); font-size:1.25rem; }
+  
+  /* ══ 仓库/制作页签（挂载在装备整备面板 eq-main 内）══════════════ */
+  #eq-warehouse-content > h2, #eq-crafting-content > h2{
+    font-size:1.05rem; letter-spacing:.3em; color:var(--amber); font-weight:700; }
+  #eq-warehouse-content > .sub, #eq-crafting-content > .sub{
+    font-size:.64rem; letter-spacing:.22em; color:var(--muted);
+    margin-top:4px; margin-bottom:20px; }
+
+  /* ══ 仓库内容（原 #warehouse-page，容器已迁入装备整备）═══════════ */
+  .warehouse-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(180px,1fr));
+    gap:12px; margin-top:16px; }
+  .wh-section{ margin-bottom:24px; }
+  .wh-section h3{ font-size:.82rem; letter-spacing:.2em; color:var(--cyan);
+    margin-bottom:12px; border-bottom:1px solid var(--rule); padding-bottom:6px; }
+  .wh-item{ border:1px solid var(--rule); background:rgba(0,0,0,.3);
+    padding:14px 12px; text-align:center; transition:all .2s; }
+  .wh-item:hover{ border-color:rgba(245,166,35,.4); background:rgba(245,166,35,.08);
+    transform:translateY(-2px); }
+  .wh-item .icon{ font-size:2rem; margin-bottom:8px; color:var(--amber); }
+  .wh-item .name{ font-size:.76rem; color:var(--ink); letter-spacing:.08em;
+    font-weight:600; margin-bottom:4px; overflow-wrap:anywhere; min-width:0; }
+  .wh-item .count{ font-size:.68rem; color:var(--muted); }
+  .wh-item .meta{ font-size:.62rem; color:var(--muted); margin-top:6px; line-height:1.5;
+    overflow-wrap:anywhere; }
+  .wh-empty{ text-align:center; padding:60px 20px; color:var(--muted);
+    font-size:.76rem; letter-spacing:.12em; }
+
+  /* 仓库容量占用条（stash used/capacity） */
+  .wh-usage{ margin:14px 0 22px; padding:12px 14px; border:1px solid var(--rule);
+    background:rgba(0,0,0,.3); }
+  .wh-usage-track{ height:8px; background:rgba(0,0,0,.5); border:1px solid var(--rule); }
+  .wh-usage-bar{ height:100%; background:var(--amber); width:0; transition:width .25s; }
+  .wh-usage-bar.full{ background:var(--threat); }
+  .wh-usage-text{ margin-top:8px; font-size:.66rem; letter-spacing:.14em;
+    color:var(--muted); font-family:var(--mono); }
+
+  /* 待整理区（overflow）条目：与普通卡同构，边框用警示色区分 */
+  .wh-overflow-item{ border-color:rgba(229,72,77,.35); background:rgba(229,72,77,.05); }
+  .wh-overflow-item .count{ color:var(--threat); }
+
+  /* 卸下全部按钮（携带背包头部） */
+  .eq-inv-unload-btn{ margin-top:10px; width:100%; padding:7px 10px;
+    border:1px solid var(--cyan); background:rgba(76,201,240,.08); color:var(--cyan);
+    font-family:var(--mono); font-size:.62rem; letter-spacing:.14em; cursor:pointer;
+    transition:all .2s; }
+  .eq-inv-unload-btn:hover{ background:rgba(76,201,240,.18); }
+  
+  /* ══ 制作内容（原 #crafting-page，容器已迁入装备整备）═══════════ */
+  /* 配方卡：底层质感与仓库 .wh-item 同源（--rule 边框 / 黑底 / 琥珀悬停反馈），
+     叠加"状态角标 + 整卡状态"这一制作页特有视觉层。
+     auto-fill 网格适配任意配方数量。 */
+  .crafting-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(240px,1fr));
+    gap:14px; margin-top:16px; }
+  .recipe-card{ position:relative; display:flex; flex-direction:column; gap:10px;
+    border:1px solid var(--rule); background:rgba(0,0,0,.3);
+    padding:14px 12px 12px; transition:all .2s; }
+  .recipe-card:hover{ border-color:rgba(245,166,35,.4); background:rgba(245,166,35,.08);
+    transform:translateY(-2px); }
+
+  /* 状态角标（右上角）：三态颜色区分 */
+  .rc-badge{ position:absolute; top:8px; right:8px; padding:3px 8px;
+    font-size:.54rem; letter-spacing:.12em; border:1px solid var(--rule);
+    background:rgba(0,0,0,.45); color:var(--muted); }
+  .recipe-card.st-ready .rc-badge{ color:var(--good);
+    border-color:rgba(63,185,111,.5); background:rgba(63,185,111,.12); }
+  .recipe-card.st-insufficient .rc-badge{ color:var(--threat);
+    border-color:rgba(229,72,77,.5); background:rgba(229,72,77,.1); }
+  .recipe-card.st-locked .rc-badge{ color:var(--muted); }
+
+  /* 整卡级三态：可制作=绿色高亮描边+内发光；材料不足=常规卡（靠角标+缺料标签警示）；
+     未解锁=降饱和+降透明度+图标锁形叠加，悬停反馈停用 */
+  .recipe-card.st-ready{ border-color:rgba(63,185,111,.55);
+    box-shadow:0 0 0 1px rgba(63,185,111,.18), inset 0 0 24px rgba(63,185,111,.06); }
+  .recipe-card.st-ready:hover{ border-color:rgba(63,185,111,.75);
+    background:rgba(63,185,111,.07); }
+  .recipe-card.st-locked{ opacity:.55; filter:saturate(.35); }
+  .recipe-card.st-locked:hover{ transform:none; border-color:var(--rule);
+    background:rgba(0,0,0,.3); }
+  .recipe-card.st-locked .rc-icon{ position:relative; }
+  .recipe-card.st-locked .rc-icon::after{ content:'🔒'; position:absolute; inset:0;
+    display:flex; align-items:center; justify-content:center; font-size:1.1rem;
+    background:rgba(8,10,14,.55); }
+
+  /* 卡头：产出图标（左侧）+ 名称/类别；右侧留出角标空间 */
+  .rc-head{ display:flex; align-items:center; gap:10px; padding-right:76px; }
+  .rc-icon{ flex:0 0 44px; height:44px; display:flex; align-items:center;
+    justify-content:center; font-size:1.5rem; color:var(--amber);
+    border:1px solid rgba(245,166,35,.35); background:rgba(245,166,35,.07); }
+  .rc-name{ font-size:.8rem; color:var(--ink); font-weight:600; letter-spacing:.08em; }
+  .rc-kind{ font-size:.52rem; color:var(--muted); letter-spacing:.16em; margin-top:3px; }
+  .rc-desc{ font-size:.62rem; color:var(--muted); line-height:1.5; }
+
+  /* 材料需求小标签：迷你图标 + 名称 + 已有/需要，flex 换行适配任意材料数 */
+  .rc-mats{ display:flex; flex-wrap:wrap; gap:6px; }
+  .rc-mat{ display:flex; align-items:center; gap:6px; padding:4px 8px;
+    border:1px solid var(--rule); background:rgba(0,0,0,.25);
+    font-size:.62rem; color:var(--ink); }
+  .rc-mat .rc-mat-ic{ font-size:.85rem; color:var(--amber); line-height:1; }
+  .rc-mat .rc-mat-nu b{ color:var(--ink); font-weight:700; }
+  .rc-mat .rc-mat-nu em{ color:var(--muted); font-style:normal; }
+  /* 缺料标签：警示色边框/底色 + 图标降色 + 已有数变红 */
+  .rc-mat.lacking{ border-color:rgba(229,72,77,.4); background:rgba(229,72,77,.08); }
+  .rc-mat.lacking .rc-mat-ic{ color:var(--threat); opacity:.75; }
+  .rc-mat.lacking .rc-mat-nm{ color:var(--muted); }
+  .rc-mat.lacking .rc-mat-nu b{ color:var(--threat); }
+  .rc-mat-none{ font-size:.6rem; color:var(--muted); letter-spacing:.1em;
+    padding:4px 0; font-style:italic; }
+
+  /* 制作按钮：margin-top:auto 让按钮在等高卡片中底部对齐 */
+  .recipe-btn{ width:100%; padding:10px; margin-top:auto; border:1px solid var(--amber);
+    background:rgba(245,166,35,.12); color:var(--amber); font-family:var(--mono);
+    font-size:.7rem; letter-spacing:.14em; cursor:pointer; transition:all .2s; }
+  .recipe-btn:hover{ background:rgba(245,166,35,.22); }
+  .recipe-btn:disabled{ opacity:.4; cursor:not-allowed; border-color:var(--rule);
+    background:rgba(0,0,0,.2); color:var(--muted); }
+  .brief-loadout-summary{ display:grid; grid-template-columns:180px 1fr; gap:12px; }
+  .brief-loadout-figure{ min-height:176px; border:1px solid rgba(76,201,240,.35); background:radial-gradient(ellipse at 50% 40%, rgba(76,201,240,.14), transparent 60%), #0b1119; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; text-align:center; }
+  .brief-figure-mark{ width:78px; height:92px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(245,166,35,.7); color:var(--amber); font-size:3rem; background:linear-gradient(180deg, rgba(245,166,35,.14), rgba(245,166,35,.02)); }
+  .brief-loadout-figure span{ display:block; color:var(--muted); font-size:.52rem; letter-spacing:.2em; }
+  .brief-loadout-figure b{ display:block; color:var(--ink); font-size:.63rem; margin-top:4px; }
+  .brief-loadout-items{ display:grid; gap:8px; }
+  .brief-loadout-item{ min-height:52px; display:flex; align-items:center; gap:12px; border:1px solid var(--rule); background:rgba(0,0,0,.25); padding:8px 10px; }
+  .brief-loadout-item .mini-art{ flex:0 0 78px; width:78px; height:32px; display:flex; align-items:center; justify-content:center; color:var(--cyan); font-size:1.2rem; }
+  .brief-loadout-item .mini-art .loadout-glyph{ width:100%; height:100%; }
+  .brief-loadout-item small,.brief-loadout-item b,.brief-loadout-item em{ display:block; }
+  .brief-loadout-item small{ color:var(--muted); font-size:.52rem; letter-spacing:.14em; }
+  .brief-loadout-item b{ color:var(--ink); font-size:.72rem; margin-top:3px; }
+  .brief-loadout-item em{ color:var(--muted); font-size:.57rem; font-style:normal; margin-top:3px; }
+  #brief-back{ flex:0 0 auto; }
+  @media (max-width:900px){
+    html,body{ overflow:auto; }
+    .eq-container{ min-height:100%; height:auto; flex-direction:column; }
+    .eq-preview,.eq-summary,.eq-inventory{ flex:0 0 auto; width:100%; border:0; }
+    .eq-preview{ min-height:520px; border-bottom:1px solid var(--rule); }
+    .eq-preview-3d{ min-height:320px; }
+    .eq-inventory{ border-top:1px solid var(--rule); }
+    .eq-main{ min-height:520px; overflow:visible; }
+    .eq-main-body{ overflow:visible; }
+    .eq-summary{ border-top:1px solid var(--rule); }
+    .brief-loadout-summary{ grid-template-columns:1fr; }
+    .brief-loadout-figure{ min-height:120px; flex-direction:row; }
+    .brief-figure-mark{ width:54px; height:64px; font-size:2rem; }
+  }
+  @media (max-width:620px){
+    #ms-panel,#brief-inner{ width:calc(100vw - 24px); padding:18px 14px 14px; }
+    #ms-grid{ grid-template-columns:1fr; gap:10px; }
+    .goal3,#diffs,.eq-weapon-grid,.eq-armor-grid,.eq-grenade-grid{ grid-template-columns:1fr; }
+    .ms-thumb{ max-height:180px; }
+    .bpager{ flex-wrap:wrap; }
+    .bpager button{ min-width:calc(50% - 4px); }
+    #brief-go{ order:4; flex-basis:100%; }
+    .eq-main-top,.eq-main-body,.eq-summary-top,.eq-summary-body,.eq-summary-footer{ padding-left:14px; padding-right:14px; }
+    .tabs{ flex-wrap:wrap; }
+    /* 批 5：仓库/制作在窄屏单列，避免长物品名撑裂布局 */
+    .warehouse-grid,.crafting-grid{ grid-template-columns:1fr; gap:10px; }
+    .wh-usage{ padding:10px 12px; }
+    .eq-inv-unload-btn{ padding:9px 10px; }
+  }
 </style>
 </head>
 <body>
@@ -383,12 +1001,12 @@
   <div id="damage-flash"></div>
 
   <div id="title">
-    <h1>肃清协议 3D</h1>
-    <p>PROTOCOL : CLEARANCE — VOXEL EDITION</p>
+    <h1>提取行动 3D</h1>
+    <p>EXTRACTION RAID — VOXEL EDITION</p>
   </div>
 
   <div id="objective">
-    <div class="lbl" id="objective-label">剩余敌人</div>
+    <div class="lbl" id="objective-label">携带物</div>
     <div id="enemy-count">– / –</div>
   </div>
 
@@ -414,6 +1032,23 @@
 
   <div id="crosshair"><i></i><i></i><i></i><i></i></div>
 
+  <!-- Quick Wheel（Q 按住）：固定 5 槽。槽位内容由 main.js 从 QuickUse 数据层
+       实时写入（name/quantity/glyph），空槽永远占位；数字徽标是槽位序号，
+       不是直达键 —— 1/2/3 仍是武器槽。中央显示「取消」语义。 -->
+  <div id="quick-wheel" aria-hidden="true">
+    <div class="qw-ring">
+      <div class="qw-slot" data-index="0" style="--i:0"><span class="qw-key">1</span><span class="qw-icon"></span><span class="qw-name">空</span><span class="qw-qty"></span></div>
+      <div class="qw-slot empty" data-index="1" style="--i:1"><span class="qw-key">2</span><span class="qw-icon"></span><span class="qw-name">空</span><span class="qw-qty"></span></div>
+      <div class="qw-slot empty" data-index="2" style="--i:2"><span class="qw-key">3</span><span class="qw-icon"></span><span class="qw-name">空</span><span class="qw-qty"></span></div>
+      <div class="qw-slot empty" data-index="3" style="--i:3"><span class="qw-key">4</span><span class="qw-icon"></span><span class="qw-name">空</span><span class="qw-qty"></span></div>
+      <div class="qw-slot empty" data-index="4" style="--i:4"><span class="qw-key">5</span><span class="qw-icon"></span><span class="qw-name">空</span><span class="qw-qty"></span></div>
+    </div>
+    <div class="qw-center">
+      <div class="qw-cancel">取消</div>
+      <div class="qw-center-name"></div>
+    </div>
+  </div>
+
   <div id="status">
     <div id="armor-bar"><div id="armor-fill"></div></div>
     <div id="hp-bar"><div id="hp-fill"></div></div>
@@ -423,11 +1058,46 @@
   <div id="nade-box"><span id="nade-kind">闪光</span>手雷 <span class="n" id="nade-count">3</span></div>
   <div id="flash-white"></div>
 
-  <div id="ammo-box">
-    <div id="weapon-name">M19</div>
-    <div id="ammo-line"><span id="ammo">12</span><span id="ammo-reserve">∞</span></div>
-    <div id="reload"><div id="reload-bar"></div></div>
+  <!-- 携带栏状态条：搜刮所得实时更新，死亡丢失、成功撤离入库 -->
+  <div id="carry-box">
+    <div class="carry-label">携带栏</div>
+    <div class="carry-count"><span id="carry-current">0</span> / <span id="carry-max">4</span></div>
+    <div class="carry-value" id="carry-value">价值 0</div>
   </div>
+
+  <div id="ammo-box">
+    <div class="ammo-slot active" id="ammo-slot-pistol">
+      <div class="weapon-name" id="weapon-name">M19</div>
+      <div class="ammo-line" id="ammo-line"><span class="ammo" id="ammo">12</span><span class="ammo-reserve" id="ammo-reserve">∞</span></div>
+      <div class="reload" id="reload"><div class="reload-bar" id="reload-bar"></div></div>
+    </div>
+    <div class="ammo-slot" id="ammo-slot-1" style="display:none">
+      <div class="weapon-name" id="weapon-name-1">—</div>
+      <div class="ammo-line"><span class="ammo" id="ammo-1">—</span><span class="ammo-reserve" id="ammo-reserve-1">—</span></div>
+      <div class="reload" id="reload-1"><div class="reload-bar" id="reload-bar-1"></div></div>
+    </div>
+    <div class="ammo-slot" id="ammo-slot-2" style="display:none">
+      <div class="weapon-name" id="weapon-name-2">—</div>
+      <div class="ammo-line"><span class="ammo" id="ammo-2">—</span><span class="ammo-reserve" id="ammo-reserve-2">—</span></div>
+      <div class="reload" id="reload-2"><div class="reload-bar" id="reload-bar-2"></div></div>
+    </div>
+  </div>
+
+  <div id="weapon-swap-choice" role="dialog" aria-label="选择替换主武器" aria-modal="true">
+    <div class="swap-panel">
+      <h3>选择替换槽位</h3>
+      <button id="swap-slot1" type="button">槽 1 · <span id="swap-slot1-name">—</span></button>
+      <button id="swap-slot2" type="button">槽 2 · <span id="swap-slot2-name">—</span></button>
+      <button id="swap-cancel" type="button">取消</button>
+      <div class="swap-hint">按 1 / 2 选择，Esc 取消</div>
+    </div>
+  </div>
+
+  <!-- 局内背包（Tab / 容器 E）：装备 / 背包 / 快捷栏 / 容器四栏并列。
+       内容由 src/ui/raid-inventory.js 渲染（槽位全部走 data 属性），
+       面板打开不暂停世界，只屏蔽玩家侧输入；容器栏只在本局打开
+       战利品箱后显示真实物品（本项目掉落表数据）。 -->
+  <div id="raid-inventory" role="dialog" aria-label="局内背包" aria-modal="true" aria-hidden="true" tabindex="-1"></div>
 
   <div id="prompt"></div>
   <div id="toast"></div>
@@ -437,27 +1107,32 @@
     <span><b>左键</b> 射击</span>
     <span><b>右键</b> 瞄准</span>
     <span><b>R</b> 换弹</span>
-    <span><b>G</b> 拾取</span>
-    <span><b>1/2</b> 换枪</span>
-    <span><b>Ctrl</b> 慢走</span>
-    <span><b>Shift</b> 蹲</span>
-    <span><b>X</b> 开门</span>
-    <span><b>Q/E</b> 倾斜</span>
+    <span><b>G</b> 手雷</span>
+    <span><b>Q</b> 快速轮盘（按住选择）</span>
+    <span><b>Tab</b> 背包</span>
+    <span><b>E</b> 交互 / 长按拾取</span>
+    <span><b>1/2/3</b> 换枪</span>
+    <span><b>Shift</b> 冲刺</span>
+    <span><b>Ctrl</b> 蹲（按住）</span>
+    <span><b>Alt</b> 翻滚</span>
+    <span><b>Z/T</b> 左右倾斜</span>
+    <span><b>X</b> 肩视角</span>
+    <span><b>V</b> 第一/第三人称</span>
     <span><b>F</b> 手电</span>
-    <span><b>C</b> 视角</span>
-    <span><b>3</b> 手雷</span>
-    <span><b>M</b> 静音</span>
-    <span><b>N</b> 音乐</span>
+    <span><b>C</b> 蹲（切换）</span>
+    <span><b>M</b> 地图</span>
+    <span><b>H</b> 小地图</span>
   </div>
 
   <div id="banner">
     <div id="banner-title"></div>
     <div id="banner-body"></div>
+    <div id="banner-loot"></div>
   </div>
 
   <div id="hint">
     <div class="big">点击进入</div>
-    <div class="small">清掉全部 <span id="hint-count">12</span> 个敌人 · 返回庭院撤离 · ESC 退出</div>
+    <div class="small">搜索装备与情报 · 活着撤离 · 死亡会丢失携带物 · ESC 退出</div>
   </div>
 
   <div id="expose">
@@ -466,43 +1141,206 @@
   </div>
 
   <div id="missions">
-    <div id="ms-panel">
-      <h2>作战档案 · 肃清协议</h2>
-      <div class="sub">SELECT OPERATION — 选择任务档案</div>
-      <div id="ms-grid"></div>
-      <div id="ms-kit">
-        <div class="ms-kit-card on" id="ms-gun" data-role="gun">
-          <div class="ms-kit-art" id="ms-gun-art"></div>
-          <div>
-            <div class="ms-kit-k">开局枪械</div>
-            <div class="ms-kit-name" id="ms-gun-name">M19 消音</div>
-            <div class="ms-kit-d" id="ms-gun-d">左键射击 · 开局即持</div>
-            <div class="ms-kit-hint">点击切换</div>
-          </div>
+    <nav class="hub-tabs">
+      <button data-tab="missions" class="active">任务</button>
+    </nav>
+    
+    <div id="missions-page" class="hub-page active">
+      <div id="ms-panel">
+        <h2>任务大厅 · 提取行动</h2>
+        <div class="sub">RAID SELECTION — 选择地图与风险等级</div>
+        <div id="ms-grid"></div>
+      <div class="ms-keys"><b>← →</b> 选择档案 · <b>Enter</b> 查看任务简报 · <b>Esc</b> 返回</div>
+    </div>
+  </div>
+</div>
+
+  <!-- 装备整备面板 -->
+  <div id="equipment">
+    <div class="eq-container">
+      <!-- 左侧：角色预览 -->
+      <div class="eq-preview">
+        <div class="eq-preview-top">
+          <h2>装备整备</h2>
+          <div class="sub">EQUIPMENT LOADOUT</div>
         </div>
-        <div class="ms-kit-card on" id="ms-nade" data-role="nade">
-          <div class="ms-kit-art" id="ms-nade-art"></div>
-          <div>
-            <div class="ms-kit-k">开局手雷</div>
-            <div class="ms-kit-name" id="ms-nade-name">闪光弹</div>
-            <div class="ms-kit-d" id="ms-nade-d">按 3 投掷</div>
-            <div class="ms-kit-hint">点击切换</div>
+            <div class="eq-preview-3d">
+          <div class="eq-scanline"></div>
+          <div class="eq-badge">OPERATOR / 07</div>
+          <canvas id="eq-canvas"></canvas>
+          <div class="eq-preview-tag"><span>LIVE LOADOUT</span><b id="eq-armor-tag">STANDARD RIG</b></div>
+        </div>
+          <div class="eq-preview-controls">
+          <div class="hint">[← →] 旋转角色 · [R] 重置视角</div>
+          <div class="eq-stats">
+            <div class="eq-stat"><span class="k">HP</span><span class="v" id="eq-hp">100</span></div>
+            <div class="eq-stat"><span class="k">护甲</span><span class="v" id="eq-armor">200</span></div>
+          </div>
+          <div class="eq-tendencies">
+            <div class="eq-tend-row">
+              <span class="k">潜行</span>
+              <div class="eq-tend-bar"><div class="eq-tend-fill" id="eq-tend-stealth" style="width:50%"></div></div>
+              <span class="v" id="eq-tend-stealth-val">50</span>
+            </div>
+            <div class="eq-tend-row">
+              <span class="k">防御</span>
+              <div class="eq-tend-bar"><div class="eq-tend-fill" id="eq-tend-defense" style="width:50%"></div></div>
+              <span class="v" id="eq-tend-defense-val">50</span>
+            </div>
+            <div class="eq-tend-row">
+              <span class="k">机动</span>
+              <div class="eq-tend-bar"><div class="eq-tend-fill" id="eq-tend-mobility" style="width:50%"></div></div>
+              <span class="v" id="eq-tend-mobility-val">50</span>
+            </div>
+            <div class="eq-tend-row">
+              <span class="k">噪音</span>
+              <div class="eq-tend-bar"><div class="eq-tend-fill" id="eq-tend-noise" style="width:50%"></div></div>
+              <span class="v" id="eq-tend-noise-val">50</span>
+            </div>
           </div>
         </div>
       </div>
-      <div class="ms-keys"><b>← →</b> 选择档案 · <b>点击</b> 切换枪 / 雷 · <b>Enter</b> 进入简报</div>
+
+      <!-- 中间：装备选择 -->
+      <div class="eq-main">
+        <div class="eq-main-top">
+          <h3>配置装备</h3>
+          <div class="tabs">
+            <div class="eq-tab active" data-tab="weapon">枪械</div>
+            <div class="eq-tab" data-tab="armor">防护</div>
+            <div class="eq-tab" data-tab="grenade">手榴弹</div>
+            <div class="eq-tab" data-tab="warehouse">仓库</div>
+            <div class="eq-tab" data-tab="crafting">制作</div>
+          </div>
+        </div>
+        <div class="eq-main-body">
+          <!-- 枪械选择 -->
+          <div class="eq-tab-content" id="eq-weapon-content">
+            <div class="eq-weapon-grid" id="eq-weapon-grid"></div>
+            <div class="eq-weapon-detail" id="eq-weapon-detail" style="display:none"></div>
+          </div>
+          <!-- 防护装备 -->
+          <div class="eq-tab-content" id="eq-armor-content" style="display:none">
+            <div class="eq-armor-grid" id="eq-armor-grid"></div>
+          </div>
+          <!-- 手榴弹 -->
+          <div class="eq-tab-content" id="eq-grenade-content" style="display:none">
+            <div class="eq-grenade-grid" id="eq-grenade-grid"></div>
+          </div>
+          <!-- 仓库（从顶部中枢导航迁入装备整备流程） -->
+          <div class="eq-tab-content" id="eq-warehouse-content" style="display:none">
+            <h2>仓库 · 当前拥有</h2>
+            <div class="sub">WAREHOUSE — 材料 · 武器 · 护甲 · 手雷 · 配件 · 蓝图</div>
+
+            <!-- 仓库容量占用（stash used / capacity；材料与蓝图不占容量） -->
+            <div class="wh-usage" id="wh-usage">
+              <div class="wh-usage-track"><div class="wh-usage-bar" id="wh-usage-bar"></div></div>
+              <div class="wh-usage-text" id="wh-usage-text">仓库 0/24 · 待整理 0</div>
+            </div>
+
+            <div class="wh-section" id="wh-materials-section">
+              <h3>材料 / MATERIALS</h3>
+              <div class="warehouse-grid" id="wh-materials"></div>
+            </div>
+
+            <div class="wh-section" id="wh-weapons-section">
+              <h3>武器 / WEAPONS</h3>
+              <div class="warehouse-grid" id="wh-weapons"></div>
+            </div>
+
+            <div class="wh-section" id="wh-armors-section">
+              <h3>护甲 / ARMORS</h3>
+              <div class="warehouse-grid" id="wh-armors"></div>
+            </div>
+
+            <div class="wh-section" id="wh-grenades-section">
+              <h3>手雷 / GRENADES</h3>
+              <div class="warehouse-grid" id="wh-grenades"></div>
+            </div>
+
+            <div class="wh-section" id="wh-attachments-section">
+              <h3>配件 / ATTACHMENTS</h3>
+              <div class="warehouse-grid" id="wh-attachments"></div>
+            </div>
+
+            <div class="wh-section" id="wh-blueprints-section">
+              <h3>蓝图 / BLUEPRINTS</h3>
+              <div class="warehouse-grid" id="wh-blueprints"></div>
+            </div>
+
+            <div class="wh-section" id="wh-overflow-section">
+              <h3>待整理区 / OVERFLOW</h3>
+              <div class="warehouse-grid" id="wh-overflow"></div>
+            </div>
+          </div>
+          <!-- 制作（从顶部中枢导航迁入装备整备流程） -->
+          <div class="eq-tab-content" id="eq-crafting-content" style="display:none">
+            <h2>制作台 · 配方与蓝图</h2>
+            <div class="sub">CRAFTING STATION — 配件制作 · 装备改进</div>
+
+            <div class="crafting-grid" id="crafting-recipes"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 中栏：携带背包 -->
+      <div class="eq-inventory" id="eq-inventory">
+        <div class="eq-inv-head">
+          <h3>携带背包</h3>
+          <div class="sub">STANDARD · 6 SLOTS</div>
+          <button id="eq-inv-unload" class="eq-inv-unload-btn">卸下全部到仓库</button>
+        </div>
+        <!-- 槽位由 equipment.js renderInventoryGrid 按
+             loadoutManager.getInventory() + slotLayout() 真实渲染（#diffs 同模式：
+             骨架容器保持为空，内容 JS 填充）。静态占位已在批 2b-2 移除。 -->
+        <div class="eq-inv-body"></div>
+      </div>
+
+      <!-- 右侧：装备摘要 -->
+      <div class="eq-summary">
+        <div class="eq-summary-top">
+          <h3>当前装备</h3>
+        </div>
+        <div class="eq-summary-body">
+          <div class="eq-summary-section" data-summary-tab="weapon">
+            <h4>主武器 <span>WEAPON / 01</span></h4>
+            <div class="eq-summary-item eq-summary-visual"><span class="summary-art" id="eq-sum-weapon-art"></span><div><b id="eq-sum-weapon">M19 消音</b><small id="eq-sum-attachments">消音器 Mk.I</small></div></div>
+          </div>
+          <div class="eq-summary-section" data-summary-tab="armor">
+            <h4>防护装备 <span>ARMOR / 02</span></h4>
+            <div class="eq-summary-item eq-summary-visual"><span class="summary-art armor-art">▣</span><div><b id="eq-sum-armor">标准战术背心</b><small id="eq-sum-armor-effects">均衡的防护与机动性</small></div></div>
+          </div>
+          <div class="eq-summary-section" data-summary-tab="grenade">
+            <h4>手榴弹 <span>UTILITY / 03</span></h4>
+            <div class="eq-summary-item eq-summary-visual"><span class="summary-art grenade-art">◉</span><div><b id="eq-sum-grenade">闪光弹 ×6</b><small>按 G 投掷</small></div></div>
+          </div>
+          
+          <!-- 风险提示区块 -->
+          <div class="eq-risk-notice">
+            <div class="eq-risk-title">⚠ 死亡掉落风险</div>
+            <div class="eq-risk-row lose">主武器 · 防护装备</div>
+            <div class="eq-risk-row keep">✓ 基础手枪 · 已解锁蓝图</div>
+          </div>
+        </div>
+        <div class="eq-summary-footer">
+          <div class="eq-summary-actions">
+            <button class="eq-btn" id="eq-back">← 返回任务简报</button>
+            <button class="eq-btn primary" id="eq-continue">开始任务 →</button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
   <div id="brief">
     <div id="brief-inner">
-      <h2>任务简报 · 肃清协议</h2>
-      <div class="sub" id="brief-sub">OPERATION BLACKHOUSE — 进去，清掉，出来</div>
+      <h2>出击简报 · 风险评估</h2>
+      <div class="sub" id="brief-sub">EXTRACTION RAID — 进入、搜索、活着撤离</div>
       <div class="dots" id="brief-dots"><i class="on"></i><i></i><i></i><i></i></div>
       <hr>
 
       <div class="bpage on" data-page="0">
-        <div class="bsec"><div class="h">01 任务</div></div>
+        <div class="bsec"><div class="h">01 任务目标</div></div>
         <div class="goal3">
           <div class="g">
             <div class="ico"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -512,7 +1350,7 @@
               <path d="M9.9 14.3h4.2" stroke="#e5484d" stroke-width="1.5"/>
               <path d="M10.5 19.5h3v2h-3z" fill="#e5484d"/>
             </svg></div>
-            <div class="l">清除目标</div>
+            <div class="n">遭遇战</div><div class="l">遭遇敌对单位</div>
           </div>
           <div class="g">
             <div class="ico"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -520,27 +1358,29 @@
               <path d="M3.5 12h10.5" stroke="#3fb96f" stroke-width="1.7" stroke-linecap="round"/>
               <path d="M11 8.5l4 3.5-4 3.5" stroke="#3fb96f" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
             </svg></div>
-            <div class="n">庭院</div><div class="l">完成后撤离</div>
+            <div class="n">庭院</div><div class="l">撤离点</div>
           </div>
           <div class="g">
             <div class="ico"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <circle cx="12" cy="12" r="8.2" stroke="#8b93a3" stroke-width="1.5"/>
               <path d="M6.4 6.4l11.2 11.2" stroke="#8b93a3" stroke-width="1.5"/>
             </svg></div>
-            <div class="n">无存档</div><div class="l">阵亡即失败</div>
+            <div class="n">死亡掉落</div><div class="l">携带物丢失</div>
           </div>
         </div>
-        <p class="map-cap" id="goal-cap"></p>
+        <p class="map-cap" id="goal-cap">本局没有存档，也没有重生。</p>
+        <span id="hint-count" style="display:none" aria-hidden="true"></span>
       </div>
 
       <div class="bpage" data-page="1">
-        <div class="bsec"><div class="h">02 难度</div></div>
+        <div class="bsec"><div class="h">02 风险等级</div></div>
         <div id="diffs"></div>
         <div class="keys4">
           <span><b>F</b>手电</span>
-          <span><b>Ctrl</b>慢走</span>
-          <span><b>Q/E</b>探头</span>
-          <span><b>3</b>手雷</span>
+          <span><b>Ctrl</b>蹲伏</span>
+          <span><b>Q</b>快速轮盘</span>
+          <span><b>Z/T</b>倾斜</span>
+          <span><b>G</b>手雷</span>
         </div>
       </div>
 
@@ -559,46 +1399,26 @@
       </div>
 
       <div class="bpage" data-page="3">
-        <div class="bsec"><div class="h">04 武器</div></div>
-        <p class="map-cap" style="margin-bottom:10px">开局即持所选枪械。手枪仍是保底。手雷数量随难度变化。</p>
-        <div class="loadout-grid guns3">
-          <div class="lcard on" data-gun="pistol" data-pistol="pistol">
-            <div class="gun" data-gun="pistol"></div>
-            <div class="t">M19 消音</div>
-            <div class="d">射速慢 · 噪音低 · 适合潜行点射</div>
-            <div class="bars" data-bars="pistol"></div>
+        <div class="bsec"><div class="h">04 携带装备确认</div></div>
+        <p class="map-cap" style="margin-bottom:10px">任务情报已同步。下一步进入装备整备，确认最终配置后出击。⚠ 死亡会丢失携带的主武器与防护装备。</p>
+        <div class="brief-loadout-summary">
+          <div class="brief-loadout-figure">
+            <div class="brief-figure-mark">◈</div>
+            <div><span>OPERATOR</span><b>装备状态待确认</b></div>
           </div>
-          <div class="lcard" data-gun="pistolFast" data-pistol="pistolFast">
-            <div class="gun" data-gun="pistolFast"></div>
-            <div class="t">M19C 快射</div>
-            <div class="d">射速快 · 更响 · 近距离连点</div>
-            <div class="bars" data-bars="pistolFast"></div>
-          </div>
-          <div class="lcard" data-gun="smg">
-            <div class="gun" data-gun="smg"></div>
-            <div class="t">MP7 冲锋枪</div>
-            <div class="d">开局即持 · 全自动 · 近距离清房</div>
-            <div class="bars" data-bars="smg"></div>
-          </div>
-        </div>
-        <div class="loadout-grid" style="margin-top:10px">
-          <div class="lcard on" data-nade="flash">
-            <div class="gun" data-nade="flash"></div>
-            <div class="t">闪光弹 ×2</div>
-            <div class="d">数量多 · 致盲 · 不伤人 · 可照亮黑屋</div>
-          </div>
-          <div class="lcard" data-nade="he">
-            <div class="gun" data-nade="he"></div>
-            <div class="t">高爆 ×½</div>
-            <div class="d">数量少 · 杀伤强 · 会惊动整层</div>
+          <div class="brief-loadout-items">
+            <div class="brief-loadout-item"><span class="mini-art" id="brief-gun-art"></span><div><small>主武器</small><b id="brief-gun-name">M19 消音</b><em id="brief-gun-detail">当前装备</em></div></div>
+            <div class="brief-loadout-item"><span class="mini-art" id="brief-armor-art">▣</span><div><small>防护装备</small><b id="brief-armor-name">标准战术背心</b><em id="brief-armor-detail">均衡防护与机动</em></div></div>
+            <div class="brief-loadout-item"><span class="mini-art" id="brief-nade-art">◉</span><div><small>手榴弹</small><b id="brief-nade-name">闪光弹 ×6</b><em id="brief-nade-detail">按 G 投掷 · Q 轮盘选择</em></div></div>
           </div>
         </div>
       </div>
 
       <div class="bpager">
+        <button id="brief-back" type="button">← 任务选择</button>
         <button id="brief-prev" type="button">上一页</button>
         <button id="brief-next" type="button">下一页</button>
-        <button id="brief-go" class="primary" type="button">开始任务</button>
+        <button id="brief-go" class="primary" type="button">携带风险装备·出击 →</button>
       </div>
     </div>
   </div>
@@ -617,7 +1437,10 @@
 </script>
 
 <script type="importmap">
-{ "imports": { "three": "https://unpkg.com/three@0.169.0/build/three.module.js" } }
+{ "imports": {
+  "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+  "three/examples/jsm/": "./node_modules/three/examples/jsm/"
+} }
 </script>
 <script type="module" src="./src/main.js"></script>
 </body>

@@ -17,19 +17,15 @@ import { BLOCK } from '../voxel/blocks.js';
  *
  * 所以每盏灯都是一个「要光还是要暗」的局部决策，而不是背景装饰。
  *
- * ══ 为什么灯是体素而不是纯 Object3D ══
- *
- * 灯必须能被子弹打中。子弹判定走的是体素网格（world.raycast），
- * 所以灯的位置必须在网格里有个 ID（FLICKER_LAMP），打碎后写成
- * LAMP_BROKEN（残骸仍在，玩家看得出打过了）。
- * 但灯 solid:false —— 它挂在天花板下，不该挡人走路也不该挡别人的子弹，
- * 所以命中判定由本系统自己做一次射线，不依赖体素碰撞。
+ * 灯的身份来自 furniture placement / mesh metadata。子弹命中仍由本系统
+ * 单独做球体求交，因此灯不需要参与体素碰撞；旧体素扫描只作为没有
+ * furniture.placements 的过渡兼容路径。
  *
  * ══ 性能 ══
  *
  * 只有最近的 maxLit 盏挂真 PointLight（不投阴影 —— 会穿墙，但它们的
  * 照射半径只有 5 vox，穿墙的观感损失远小于阴影贴图的开销）。
- * 其余的灯靠方块自发光的顶点色，远处看仍然是一个亮点。
+ * 其余的灯靠家具模型的自发光材质，远处看仍然是一个亮点。
  */
 
 const L = () => LIGHT.emergencyLamp;
@@ -37,12 +33,12 @@ const L = () => LIGHT.emergencyLamp;
 export class EmergencyLights {
   /**
    * @param scene three 场景
-   * @param world 体素世界（灯的 ID 写在这里，所以子弹能打中）
+   * @param world 体素世界；正式灯身份来自 world.furniture 元数据
    */
   constructor(scene, world) {
     this.scene = scene;
     this.world = world;
-    /** 全部灯：{ gx, gy, gz, hp, broken, level, blackoutUntil, light } */
+    /** 全部灯：{ gx, gy, gz, cx, cy, cz, hp, broken, level, blackoutUntil, phase, mesh } */
     this.lamps = [];
     /** 真光源池，按距离分配给最近的几盏 */
     this.pool = [];
@@ -54,30 +50,116 @@ export class EmergencyLights {
       this.pool.push(p);
     }
     this._t = 0;
+    this._brokenMaterial = null;
   }
 
   /**
-   * 从体素网格扫出所有 FLICKER_LAMP，登记成灯对象。
-   * 关卡只要往网格里写 FLICKER_LAMP，本系统就自动接管，不需要额外注册。
+   * 从 furniture placement / mesh metadata 登记应急灯。
+   * placements 存在时即使网格里没有 FLICKER_LAMP 也必须能工作；只有旧世界
+   * 没有 placements 时，才回退到旧体素扫描，避免普通家具 voxel 参与灯识别。
    */
   scan() {
     this.lamps.length = 0;
     const w = this.world;
-    for (let y = 0; y < w.sy; y++)
-      for (let z = 0; z < w.sz; z++)
-        for (let x = 0; x < w.sx; x++) {
-          if (w.get(x, y, z) !== BLOCK.FLICKER_LAMP) continue;
-          this.lamps.push({
-            gx: x, gy: y, gz: z,
-            cx: x + 0.5, cy: y + (L().mountY - Math.floor(L().mountY)) + 0.15, cz: z + 0.5,
-            hp: L().hp,
-            broken: false,
-            level: 1,
-            blackoutUntil: 0,
-            phase: Math.random() * 1000,
-          });
-        }
+    const furniture = w.furniture;
+    const placementsExist = Array.isArray(furniture?.placements);
+    const placements = placementsExist ? furniture.placements : [];
+    const meshes = Array.isArray(furniture?.meshes) ? furniture.meshes : [];
+    const meshEntries = meshes
+      .map((mesh) => ({ mesh, metadata: mesh?.userData?.furniture }))
+      .filter(({ metadata }) => metadata &&
+        (metadata.id === 'flickerLamp' || metadata.id === 'lampBroken' ||
+          metadata.lampState === 'broken'));
+
+    let entries;
+    if (placementsExist) {
+      entries = placements
+        .filter((item) => item &&
+          (item.id === 'flickerLamp' || item.id === 'lampBroken' ||
+            item.lampState === 'broken'))
+        .map((placement) => ({ placement, mesh: this._findLampMesh(placement, meshEntries) }));
+      // A furniture object may expose only mesh metadata for lamps. Use it when
+      // the placements array exists but contains no lamp entries; still never
+      // fall back to voxels in that case.
+      if (entries.length === 0) {
+        entries = meshEntries.map(({ mesh, metadata }) => ({ placement: metadata, mesh }));
+      }
+    } else if (meshEntries.length > 0) {
+      entries = meshEntries.map(({ mesh, metadata }) => ({ placement: metadata, mesh }));
+    } else {
+      entries = [];
+      for (let y = 0; y < w.sy; y++)
+        for (let z = 0; z < w.sz; z++)
+          for (let x = 0; x < w.sx; x++) {
+            if (w.get(x, y, z) !== BLOCK.FLICKER_LAMP) continue;
+            entries.push({ placement: { id: 'flickerLamp', x, y, z }, mesh: null });
+          }
+    }
+
+    for (const { placement, mesh } of entries) {
+      const x = Number.isFinite(placement.x) ? placement.x : placement.gx;
+      const y = Number.isFinite(placement.y) ? placement.y : placement.gy;
+      const z = Number.isFinite(placement.z) ? placement.z : placement.gz;
+      if (![x, y, z].every(Number.isFinite)) continue;
+      const gx = Math.floor(x), gy = Math.floor(y), gz = Math.floor(z);
+      const broken = placement.broken === true || placement.id === 'lampBroken' ||
+        placement.lampState === 'broken';
+      this.lamps.push({
+        gx, gy, gz,
+        cx: x + 0.5, cy: y + (L().mountY - Math.floor(L().mountY)) + 0.15, cz: z + 0.5,
+        hp: Number.isFinite(placement.hp) ? placement.hp : (broken ? 0 : L().hp),
+        broken,
+        level: broken ? 0 : (Number.isFinite(placement.level) ? placement.level : 1),
+        blackoutUntil: Number.isFinite(placement.blackoutUntil) ? placement.blackoutUntil : 0,
+        phase: Number.isFinite(placement.phase) ? placement.phase : Math.random() * 1000,
+        placement,
+        mesh,
+      });
+    }
     return this.lamps.length;
+  }
+
+  _findLampMesh(placement, meshEntries) {
+    return meshEntries.find(({ metadata }) => metadata === placement ||
+      (metadata.x === placement.x && metadata.y === placement.y && metadata.z === placement.z))?.mesh ?? null;
+  }
+
+  _showBrokenMesh(lamp) {
+    const mesh = lamp.mesh;
+    if (!mesh) return;
+    mesh.visible = true;
+    const metadata = mesh.userData?.furniture;
+    if (metadata) {
+      metadata.id = 'lampBroken';
+      metadata.broken = true;
+      metadata.lampState = 'broken';
+      metadata.level = 0;
+    }
+    // The original fixture is a body plus a glow child. Keep the mount/body and
+    // replace only the luminous tube with a few dark fragments in the same group.
+    if (typeof mesh.traverse === 'function') {
+      mesh.traverse((child) => {
+        if (child.name === 'glow') child.visible = false;
+      });
+    }
+    if (mesh.userData && mesh.userData.lampBrokenVisual) return;
+    if (typeof mesh.add !== 'function') return;
+    if (!this._brokenMaterial) this._brokenMaterial = new THREE.MeshLambertMaterial({ color: 0x3a3f46 });
+    const debris = new THREE.Group();
+    debris.name = 'lamp-broken-visual';
+    for (const [x, y, z, sx, sy, sz, rz] of [
+      [-0.26, 0.15, 0.02, 0.09, 0.16, 0.09, 0.5],
+      [0.02, 0.12, -0.01, 0.09, 0.12, 0.09, 1.2],
+      [0.28, 0.11, 0.03, 0.09, 0.10, 0.09, 0.8],
+    ]) {
+      const fragment = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 1, 8), this._brokenMaterial);
+      fragment.scale.set(sx, sy, sz);
+      fragment.position.set(x, y, z);
+      fragment.rotation.z = rz;
+      debris.add(fragment);
+    }
+    mesh.add(debris);
+    if (mesh.userData) mesh.userData.lampBrokenVisual = debris;
   }
 
   get aliveCount() {
@@ -139,15 +221,24 @@ export class EmergencyLights {
 
   /**
    * 打灯。返回 true 表示这一枪把灯打碎了。
-   * 打碎后写 LAMP_BROKEN 并标脏区块 —— 顶点色会重建成不发光的残骸。
+   * 灯是家具视觉对象，不改写体素；状态写回 placement，并在原模型内
+   * 关闭发光部件、追加稳定的暗色碎管视觉。
    */
   damage(lamp, amount) {
     if (lamp.broken) return false;
     lamp.hp -= amount;
+    if (lamp.placement) lamp.placement.hp = Math.max(0, lamp.hp);
     if (lamp.hp > 0) return false;
     lamp.broken = true;
     lamp.level = 0;
-    this.world.set(lamp.gx, lamp.gy, lamp.gz, BLOCK.LAMP_BROKEN);
+    if (lamp.placement) {
+      lamp.placement.broken = true;
+      lamp.placement.id = 'lampBroken';
+      lamp.placement.lampState = 'broken';
+      lamp.placement.hp = 0;
+      lamp.placement.level = 0;
+    }
+    this._showBrokenMesh(lamp);
     if (lamp.light) {
       lamp.light.visible = false;
       lamp.light = null;

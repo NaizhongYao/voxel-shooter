@@ -1,5 +1,5 @@
 import { World, BLOCK } from '../voxel/world.js';
-import { furnishLevel01, clearDoorways, clearSpawn } from './furniture.js';
+import { furnishLevel01 } from './furniture.js';
 
 /**
  * 关卡 01「黑楼」——64×64 单层平房 + 外接庭院。
@@ -83,6 +83,23 @@ export const ROOMS = {
   foyer:     { x0: 25, x1: 39, z0: 38, z1: 46 },
   kitchen:   { x0: 42, x1: 55, z0: 38, z1: 46 },
 };
+
+/**
+ * 掠夺容器（战利品箱）坐标与稀有度（DECISIONS 2026-08-29：
+ * 按房间风险分稀有度，越深/越偏的箱子价值越高；坐标必须是房间内的净空格）。
+ *
+ *   · 门厅 low —— 主入口第一间，浅区教学箱，出些废料/弹药；
+ *   · 仓库 med —— 穿到北区中段的大空间才算，「房子中段」的常规军需；
+ *   · 书房 high —— 东北最深角的房间，要跨过整栋楼 + 两层隔墙才到。
+ *
+ * y 由主循环用世界地面吸附补齐（与拾取物同一套 API），这里只写 x/z。
+ * 三个格子都验证过 y=1..2 没有任何家具/墙体（改动前必须复核）。
+ */
+export const LOOT_CONTAINERS = [
+  { x: 34.5, z: 41.5, tier: 'low' },    // 门厅（主入口东侧空地）
+  { x: 30.5, z: 21.5, tier: 'med' },    // 仓库
+  { x: 48.5, z: 10.5, tier: 'high' },   // 书房（东北角）
+];
 
 // ───────────────────────────────────────────────────────────────────────────
 // 建造原语
@@ -252,12 +269,8 @@ export function buildLevel01() {
   xWall(w, 45, 34, 35, BLOCK.WALL_IN);   // 留 z=33
 
   // ---- 家具与掩体（坐标留在 furnishLevel01，统一走家具库）----------------
-  furnishLevel01(w, Y0);
-
-  // 家具布置完之后统一清障：门洞、通道口与出生点必须净空。
-  // 白名单在 furniture.js 的 CLEARABLE，新增家具方块时只改那一处。
-  clearDoorways(w, DOORS, DOOR_H);
-  clearSpawn(w, SPAWN, Y0);
+  const furniture = furnishLevel01(w, Y0, DOORS, SPAWN);
+  w.furniture = furniture;
 
   return w;
 }

@@ -1,5 +1,5 @@
 import { World, BLOCK } from '../voxel/world.js';
-import { furnishLevel03, clearDoorways, clearSpawn } from './furniture.js';
+import { furnishLevel03 } from './furniture.js';
 
 /**
  * 关卡 03「废弃电台」——64×64 单层，十字形四翼夹一个中庭。
@@ -224,11 +224,8 @@ export function buildLevel03() {
   w.fill(22, CEIL_Y, 19, 43, CEIL_Y, 33, BLOCK.CEILING);   // 中庭
 
   // ---- 家具与掩体（坐标留在 furnishLevel03，统一走家具库）----------------
-  furnishLevel03(w, Y0);
-
-  // 家具布置完之后统一清障：门洞、通道口与出生点必须净空。
-  clearDoorways(w, DOORS, DOOR_H);
-  clearSpawn(w, SPAWN, Y0);
+  const furniture = furnishLevel03(w, Y0, DOORS, SPAWN);
+  w.furniture = furniture;
 
   return w;
 }

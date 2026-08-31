@@ -38,7 +38,9 @@ export class Pickup {
       this.mesh = new THREE.Mesh(BOX, new THREE.MeshLambertMaterial({ color }));
     }
     this.mesh.position.copy(this.pos);
-    this.mesh.castShadow = false;
+    // 武器/医疗包模型是 Group，castShadow 对 Group 无效（Three 只认 Mesh）：
+    // 遍历所有子 Mesh 关闭投影 —— 浮空拾取物不该在地板上投出晃动的影子。
+    this.mesh.traverse((o) => { if (o.isMesh) o.castShadow = false; });
     scene.add(this.mesh);
     this.scene = scene;
   }
@@ -147,7 +149,7 @@ export class PickupManager {
     return nearWeapon;
   }
 
-  /** 玩家按 R 拾取武器；旧主武器掉在脚下 */
+  /** 玩家按键拾取武器的旧兼容入口：始终替换槽1。 */
   takeWeapon(pickup, loadout, player, now) {
     const spec = WEAPONS[pickup.payload.weapon];
     if (!spec) return null;
@@ -156,9 +158,34 @@ export class PickupManager {
       pickup.payload.reserve ?? spec.reserve, now
     );
     pickup.take();
-    if (old) {
+    if (old) this.dropWeapon(player.pos, old.spec.id, old.ammo, old.reserve);
+    return spec;
+  }
+
+  /** 自动拾取：由 Loadout 选择第一个空主武器槽。 */
+  takeWeaponAuto(pickup, loadout, player, now) {
+    return this._takeWeaponByResult(
+      pickup, loadout, player, now,
+      loadout.pickUpAuto(pickup?.payload, now)
+    );
+  }
+
+  /** 指定槽位替换：用于双主武器已满时的明确选择。 */
+  takeWeaponToSlot(pickup, loadout, player, now, targetSlot) {
+    return this._takeWeaponByResult(
+      pickup, loadout, player, now,
+      loadout.pickUpToSlot(pickup?.payload, now, targetSlot)
+    );
+  }
+
+  _takeWeaponByResult(pickup, loadout, player, now, result) {
+    const spec = WEAPONS[pickup?.payload?.weapon];
+    if (!spec || !result?.ok) return result ?? { ok: false };
+    pickup.take();
+    if (result.dropped) {
+      const old = result.dropped;
       this.dropWeapon(player.pos, old.spec.id, old.ammo, old.reserve);
     }
-    return spec;
+    return { ...result, spec };
   }
 }

@@ -1,5 +1,5 @@
 import { World, BLOCK } from '../voxel/world.js';
-import { furnishLevel02, clearDoorways, clearSpawn } from './furniture.js';
+import { furnishLevel02 } from './furniture.js';
 
 /**
  * 关卡 02「废弃诊所」——同样 64×64 单层，平面却和 01 完全不同。
@@ -209,9 +209,8 @@ export function buildLevel02() {
   w.fill(6, CEIL_Y, 34, 57, CEIL_Y, 48, BLOCK.CEILING);
 
   // ---- 家具与掩体（坐标留在 furnishLevel02，统一走家具库）----------------
-  furnishLevel02(w, Y0);
-  clearDoorways(w, DOORS, DOOR_H);
-  clearSpawn(w, SPAWN, Y0);
+  const furniture = furnishLevel02(w, Y0, DOORS, SPAWN);
+  w.furniture = furniture;
 
   return w;
 }

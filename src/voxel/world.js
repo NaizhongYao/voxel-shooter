@@ -1,5 +1,6 @@
 import { WORLD } from '../config.js';
 import { BLOCK, BLOCKS, isSolid, isOpaque, topOf } from './blocks.js';
+import { FurnitureCollider } from '../systems/furniture-collider.js';
 
 const { SX, SY, SZ } = WORLD;
 
@@ -12,6 +13,19 @@ export class World {
     this.sx = SX; this.sy = SY; this.sz = SZ;
     this.data = new Uint8Array(SX * SY * SZ);
     this.dirtyChunks = new Set();
+    this.furnitureCollider = null;
+  }
+
+  setFurnitureColliders(colliders = []) {
+    this.furnitureCollider = new FurnitureCollider(colliders);
+    return this.furnitureCollider;
+  }
+
+  _ensureFurnitureCollider() {
+    if (!this.furnitureCollider && Array.isArray(this.furniture?.colliders)) {
+      this.setFurnitureColliders(this.furniture.colliders);
+    }
+    return this.furnitureCollider;
   }
 
   idx(x, y, z) { return (y * SZ + z) * SX + x; }
@@ -76,7 +90,9 @@ export class World {
         }
       }
     }
-    return false;
+    return !!this._ensureFurnitureCollider()?.boxIntersects(
+      minX, minY, minZ, maxX, maxY, maxZ
+    );
   }
 
   /**
@@ -100,7 +116,10 @@ export class World {
         }
       }
     }
-    return best;
+    const furnitureBest = this._ensureFurnitureCollider()?.highestSurfaceUnder(
+      minX, minZ, maxX, maxZ, probeTop, probeBottom
+    ) ?? -Infinity;
+    return Math.max(best, furnitureBest);
   }
 
   /**
@@ -121,6 +140,7 @@ export class World {
     let tMaxZ = stepZ > 0 ? (gz + 1 - oz) * tDeltaZ : stepZ < 0 ? (oz - gz) * tDeltaZ : Infinity;
 
     let normal = [0, 0, 0];
+    let voxelHit = null;
     let t = 0;
     for (let guard = 0; guard < 512; guard++) {
       const id = this.get(gx, gy, gz);
@@ -130,14 +150,15 @@ export class World {
         const h = topOf(id);
         const py = oy + dy * t;
         if (h >= 1 || (py - gy) < h) {
-          return {
+          voxelHit = {
             grid: [gx, gy, gz], normal, dist: t,
             point: [ox + dx * t, oy + dy * t, oz + dz * t],
             id,
           };
+          break;
         }
       }
-      if (t > maxDist) return null;
+      if (voxelHit || t > maxDist) break;
       if (tMaxX < tMaxY && tMaxX < tMaxZ) {
         gx += stepX; t = tMaxX; tMaxX += tDeltaX; normal = [-stepX, 0, 0];
       } else if (tMaxY < tMaxZ) {
@@ -145,9 +166,16 @@ export class World {
       } else {
         gz += stepZ; t = tMaxZ; tMaxZ += tDeltaZ; normal = [0, 0, -stepZ];
       }
-      if (gy < -2 || gy > SY + 2) return null;
+      if (gy < -2 || gy > SY + 2) break;
     }
-    return null;
+    const furnitureHit = this._ensureFurnitureCollider()?.raycast(
+      ox, oy, oz, dx, dy, dz, maxDist, opaqueOnly
+    ) ?? null;
+    if (!voxelHit) {
+      return furnitureHit ? { ...furnitureHit, id: BLOCK.WALL_IN } : null;
+    }
+    if (!furnitureHit || voxelHit.dist <= furnitureHit.dist + 1e-6) return voxelHit;
+    return { ...furnitureHit, id: BLOCK.WALL_IN };
   }
 
   /** 两点之间是否有不透光方块（敌人视线判定用） */

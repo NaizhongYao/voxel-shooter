@@ -196,18 +196,80 @@ export const ENTITY_RADIUS = 0.28;
 
 export class Enemy {
   /**
-   * @param spec { x, z, y, archetype, weapon, yaw, patrol?: [[x,z],...] }
+   * @param spec { x, z, y, archetype, weapon, yaw, patrol?: [[x,z],...], wander?: boolean }
+   * @param services Optional runtime services:
+   *   `{ doors, navigation, rooms, roomLinks, rng, onDoorNoise }`.
+   *   The two-argument form remains valid for logic-only callers and tests.
    */
-  constructor(world, spec) {
+  constructor(world, spec, services = null) {
     this.id = ++_idSeq;
     this.world = world;
+    this.services = services ?? spec.services ?? {};
     this.archetype = spec.archetype;
     this.spawn = new THREE.Vector3(spec.x, spec.y, spec.z);
     this.pos = this.spawn.clone();
+    this.anchor = this.spawn.clone();
+    this.anchorPoint = { x: this.anchor.x, y: this.anchor.y, z: this.anchor.z };
     this.yaw = spec.yaw ?? 0;
     this.homeYaw = this.yaw;
-    this.patrol = spec.patrol ?? null;
+    this.rng = typeof this.services.rng === 'function'
+      ? this.services.rng : () => Math.random();
+    const validPatrol = Array.isArray(spec.patrol) && spec.patrol.length >= 2;
+    this.patrol = validPatrol ? spec.patrol : null;
+    this.behaviorMode = validPatrol ? 'patrol' : spec.wander === true ? 'wander' : 'sentry';
+    this.wander = spec.wander === true;
+    this.canCrossRooms = spec.canCrossRooms === true;
+    this.wanderRooms = Array.isArray(spec.wanderRooms)
+      ? spec.wanderRooms.filter((room) => typeof room === 'string') : [];
     this.patrolIdx = 0;
+
+    // Navigation is resolved lazily so legacy worlds without an index still work.
+    const navigation = this.navigation;
+    this.anchorRoom = spec.anchorRoom
+      ?? navigation?.getRoomAt?.(this.anchor.x, this.anchor.z)
+      ?? null;
+    const requestedHomeRadius = Number(spec.homeRadius ?? 5);
+    this.homeRadius = Number.isFinite(requestedHomeRadius)
+      ? Math.max(0, requestedHomeRadius) : 5;
+    this.homeRadius = this.clipHomeRadius(this.homeRadius, this.anchorRoom);
+    this.wanderTarget = null;
+    this.wanderPath = [];
+    this.wanderWaypointIndex = 0;
+    this.wanderPause = 0;
+    this.wanderStall = 0;
+    this.wanderRecentTargets = [];
+    this.wanderScanCenter = this.yaw;
+    this.wanderScanPhase = 0;
+    this.wanderScanAmplitude = 35 * Math.PI / 180;
+    this.wanderScanPeriod = 3.2;
+    // Look-around is a visual-only idle submode. Combat always overwrites yaw
+    // from the live/last-known target and never inherits this value.
+    this.lookYaw = this.yaw;
+    this.returnHome = {
+      active: false,
+      target: null,
+      path: [],
+      waypointIndex: 0,
+      hold: 0,
+      retryAt: 0,
+    };
+    // Strafe is deliberately opt-in so existing sentry, shield, and rusher
+    // encounters keep their authored movement identities.
+    this.combatStrafeEnabled = spec.combatStrafe === true || spec.strafe === true;
+    this.strafeActive = false;
+    this.strafeTarget = null;
+    this.strafeSpeed = 0;
+    this.strafeUntil = 0;
+    this.nextStrafeAt = 0;
+    this.crossPlan = null;
+    this.crossPlanIndex = 0;
+    this.crossPhase = 'idle';
+    this.crossWait = 0;
+    this.crossDoorRetries = 0;
+    this.pathRevision = this.navigation?.doorRevision ?? 0;
+    this.crossFailureUntil = 0;
+    this.crossFailedTarget = null;
+    this.crossBlocked = false;
 
     /**
      * 武装敌人要先于 hpMax 判定（血量翻倍依据这一点）。
@@ -254,11 +316,11 @@ export class Enemy {
      * scanShiftTimer 到点后悄悄挪一次中心（避开墙面）。
      */
     this.scanCenter = this.yaw;
-    this.scanPhase = Math.random() * Math.PI * 2;
-    this.scanShiftTimer = 8 + Math.random() * 4;
+    this.scanPhase = this.random() * Math.PI * 2;
+    this.scanShiftTimer = 8 + this.random() * 4;
     /** 查房无目标时的张望摆动，同一套机制，振幅/周期更急促 */
     this.investScanCenter = this.yaw;
-    this.investScanPhase = Math.random() * Math.PI * 2;
+    this.investScanPhase = this.random() * Math.PI * 2;
     // 搜索状态：失去目标后去哪些点找人
     this.searchPoints = null;
     this.searchIdx = 0;
@@ -436,12 +498,254 @@ export class Enemy {
     return 'calm';
   }
 
-  get eyeY() {
-    return this.pos.y + this.height * 0.85;
+  /** NavigationIndex is optional and may be mounted after an Enemy is created. */
+  get navigation() { return this.services?.navigation ?? this.world?.navigation ?? null; }
+
+  /** Late wiring remains available for legacy worlds and focused tests. */
+  attachNavigation(services = {}) {
+    this.services = { ...this.services, ...services };
+    if (typeof services.rng === 'function') this.rng = services.rng;
+    return this;
+  }
+
+  random() {
+    let value;
+    try { value = Number(this.rng?.()); } catch { value = 0; }
+    return Number.isFinite(value) ? Math.max(0, Math.min(0.999999999, value)) : 0;
+  }
+
+  /** Keep the wander leash inside 45% of the room's shorter side. */
+  clipHomeRadius(radius, roomId) {
+    const room = this.navigation?.level?.rooms?.[roomId];
+    if (!room) return radius;
+    const width = Number(room.x1) - Number(room.x0) + 1;
+    const depth = Number(room.z1) - Number(room.z0) + 1;
+    const shortSide = Math.min(width, depth);
+    return Number.isFinite(shortSide) && shortSide > 0
+      ? Math.min(radius, shortSide * 0.45) : radius;
+  }
+
+  /** Resolve room metadata after a late world.navigation mount. */
+  ensureWanderContext() {
+    const nav = this.navigation;
+    if (!nav) return null;
+    if (!this.anchorRoom && typeof nav.getRoomAt === 'function') {
+      this.anchorRoom = nav.getRoomAt(this.anchor.x, this.anchor.z) ?? null;
+    }
+    this.homeRadius = this.clipHomeRadius(this.homeRadius, this.anchorRoom);
+    return this.anchorRoom;
+  }
+
+  /** Return-home is a submode of investigation, never a new public STATE. */
+  canReturnHome() {
+    const nav = this.navigation;
+    const roomId = this.ensureWanderContext();
+    if (!this.canCrossRooms
+        || (this.behaviorMode !== 'wander' && this.behaviorMode !== 'patrol')
+        || !roomId
+        || typeof nav?.getRoomNodes !== 'function'
+        || typeof nav?.findLocalPath !== 'function') return false;
+    const nodes = nav.getRoomNodes(roomId);
+    return Array.isArray(nodes) && nodes.length > 0;
+  }
+
+  clearReturnHome() {
+    this.returnHome.active = false;
+    this.returnHome.target = null;
+    this.returnHome.path = [];
+    this.returnHome.waypointIndex = 0;
+    this.returnHome.hold = 0;
+    this.returnHome.retryAt = 0;
+  }
+
+  beginReturnHome(now = 0) {
+    if (!this.canReturnHome()) return false;
+    this.clearCrossRoomPlan();
+    this.investigateTarget = null;
+    this.searchOrigin = null;
+    this.returnHome.active = true;
+    this.returnHome.retryAt = now;
+    this.stateTime = 0;
+    return true;
+  }
+
+  /** Pick a bounded, legal node near this enemy's own birth anchor. */
+  chooseReturnHomeTarget(now = 0) {
+    if (!this.canReturnHome()) return null;
+    const nav = this.navigation;
+    const roomId = this.ensureWanderContext();
+    if (!nav || typeof nav.getRoomNodes !== 'function'
+        || typeof nav.findLocalPath !== 'function') return null;
+    const nodes = nav.getRoomNodes(roomId)
+      .filter((node) => this.validWanderPoint(node));
+    if (nodes.length === 0) return null;
+
+    const point = (value) => ({ x: Number(value.x), z: Number(value.z) });
+    const dist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+    const anchor = { x: this.anchor.x, z: this.anchor.z };
+    const current = { x: this.pos.x, z: this.pos.z };
+    const currentRoom = nav.getRoomAt?.(this.pos.x, this.pos.z);
+    const recent = (this.wanderRecentTargets ?? []).slice(-3).map(point);
+    const maxDistance = Number.isFinite(this.homeRadius) ? this.homeRadius : 5;
+    const candidates = nodes.filter((node) => {
+      const p = point(node);
+      return dist(anchor, p) <= maxDistance + 1e-6
+        && (typeof nav.isWalkablePoint !== 'function' || nav.isWalkablePoint(
+          p.x, p.z, { roomId, y: this.pos.y, entityRadius: this.radius, entityHeight: this.height }
+        ));
+    });
+
+    // A finite shuffled pass keeps target choice deterministic under injected RNG.
+    const pool = candidates.slice();
+    for (let attempt = 0; attempt < 24 && pool.length > 0; attempt++) {
+      const index = Math.floor(this.random() * pool.length);
+      const [node] = pool.splice(index, 1);
+      const p = point(node);
+      if (recent.some((old) => dist(old, p) < 2.5)) continue;
+      let path = null;
+      let cross = false;
+      const target = new THREE.Vector3(p.x, this.pos.y, p.z);
+      if (currentRoom === roomId) {
+        path = nav.findLocalPath(current, p, {
+          roomId, maxNodes: 192, maxDistance: 48,
+        });
+      } else if (currentRoom && this.planCrossRoom(target, 'wander', [roomId])) {
+        cross = true;
+      }
+      if (!cross && (!Array.isArray(path) || path.length === 0)) continue;
+      if (!cross && path.some((waypoint) => !this.validWanderPoint(waypoint))) continue;
+      if (!cross && path.some((waypoint) => dist(anchor, point(waypoint)) > maxDistance + 1e-6)) continue;
+      this.returnHome.target = target;
+      this.returnHome.path = cross ? [] : path.slice();
+      this.returnHome.waypointIndex = 0;
+      this.returnHome.hold = 0;
+      this.returnHome.retryAt = now;
+      const history = Array.isArray(this.wanderRecentTargets)
+        ? this.wanderRecentTargets : [];
+      this.wanderRecentTargets = [...history, p].slice(-8);
+      return target;
+    }
+    return null;
+  }
+
+  finishReturnHome() {
+    const mode = this.behaviorMode;
+    this.clearReturnHome();
+    this.clearCrossRoomPlan();
+    this.investigateTarget = null;
+    this.state = STATE.IDLE;
+    this.stateTime = 0;
+    this.lookYaw = this.yaw;
+    if (mode === 'wander') this.beginWanderPause();
+    else if (mode === 'patrol' && this.patrol) this.patrolIdx = this.nearestPatrolIndex();
+  }
+
+  doReturnHome(dt, ctx, now) {
+    const nav = this.navigation;
+    const roomId = this.ensureWanderContext();
+    if (!this.canReturnHome() || !nav || !roomId
+        || typeof nav.getRoomNodes !== 'function'
+        || typeof nav.findLocalPath !== 'function') {
+      this.clearReturnHome();
+      this.state = STATE.IDLE;
+      this.stateTime = 0;
+      return;
+    }
+    if (this.pathRevision !== nav.doorRevision) {
+      this.clearCrossRoomPlan();
+      this.returnHome.path = [];
+      this.returnHome.waypointIndex = 0;
+      this.pathRevision = nav.doorRevision;
+    }
+    if (!this.returnHome.target && now >= this.returnHome.retryAt) {
+      if (!this.chooseReturnHomeTarget(now)) this.returnHome.retryAt = now + 1.0;
+    }
+    const target = this.returnHome.target;
+    if (!target) {
+      this.doReturnHomeLook(dt);
+      return;
+    }
+
+    if (this.crossPlan) {
+      const status = this.moveCrossRoom(dt, 1.5, now, 'wander');
+      if (status === 'failed') {
+        this.returnHome.target = null;
+        this.returnHome.path = [];
+        this.returnHome.waypointIndex = 0;
+        this.returnHome.retryAt = now + 1.2;
+      } else if (status !== 'arrived') {
+        return;
+      }
+    }
+    if (!this.crossPlan) {
+      const currentRoom = nav.getRoomAt?.(this.pos.x, this.pos.z);
+      if (currentRoom !== roomId) {
+        // A door revision clears the staged plan. Rebuild it from the current
+        // room instead of leaving the return target suspended forever.
+        if (now >= this.returnHome.retryAt) {
+          if (!this.planCrossRoom(target, 'wander', [roomId])) {
+            this.returnHome.retryAt = now + 1.2;
+          }
+        }
+        return;
+      }
+      if (!Array.isArray(this.returnHome.path) || this.returnHome.path.length === 0) {
+        const path = nav.findLocalPath(
+          { x: this.pos.x, z: this.pos.z },
+          { x: target.x, z: target.z },
+          { roomId, maxNodes: 192, maxDistance: 48 },
+        );
+        if (Array.isArray(path) && path.length > 0
+            && path.every((point) => this.validWanderPoint(point))) {
+          this.returnHome.path = path;
+          this.returnHome.waypointIndex = 0;
+        }
+      }
+      const waypoint = this.returnHome.path[this.returnHome.waypointIndex];
+      if (!this.validWanderPoint(waypoint)) {
+        this.returnHome.target = null;
+        this.returnHome.path = [];
+        this.returnHome.waypointIndex = 0;
+        this.returnHome.retryAt = now + 1.0;
+        return;
+      }
+      const arrived = this.moveToward(waypoint, dt, 1.5, { doors: ctx?.doors, now });
+      if (arrived && this.returnHome.waypointIndex < this.returnHome.path.length - 1) {
+        this.returnHome.waypointIndex += 1;
+      }
+    }
+
+    const currentRoom = nav.getRoomAt?.(this.pos.x, this.pos.z);
+    const distance = Math.hypot(target.x - this.pos.x, target.z - this.pos.z);
+    if (currentRoom === roomId && distance <= 0.7) {
+      this.returnHome.hold += dt;
+      this.doReturnHomeLook(dt);
+      if (this.returnHome.hold >= 0.25) this.finishReturnHome();
+    } else {
+      this.returnHome.hold = 0;
+    }
+  }
+
+  doReturnHomeLook(dt) {
+    this.wanderScanPhase += dt * (Math.PI * 2 / this.wanderScanPeriod);
+    const targetYaw = this.wanderScanCenter
+      + Math.sin(this.wanderScanPhase) * this.wanderScanAmplitude;
+    this.yaw += angleDiff(targetYaw, this.yaw)
+      * Math.min(1, dt * PERCEPTION.turnRateSearch);
+    this.lookYaw = this.yaw;
+  }
+
+  /** True only for finite, usable navigation points. */
+  validWanderPoint(point) {
+    return !!point && Number.isFinite(Number(point.x)) && Number.isFinite(Number(point.z));
   }
 
   /** 碰撞圆柱半径。门系统用它判断「门洞里有没有人」。 */
   get radius() { return ENTITY_RADIUS; }
+
+  get eyeY() {
+    return this.pos.y + this.height * 0.85;
+  }
 
   /**
    * 命中盒：三段 AABB（头 / 躯干 / 四肢），返回命中倍率。
@@ -544,6 +848,7 @@ export class Enemy {
         this.investigateTarget = new THREE.Vector3(
           this.pos.x - dir.x * 6, this.pos.y, this.pos.z - dir.z * 6
         );
+        this.crossBlocked = false;
       }
       this.toAlert();
     }
@@ -555,9 +860,12 @@ export class Enemy {
       this.dead = true;
       this.state = STATE.DEAD;
       this.flashlightOn = false;
-      // 倒地而不是凭空消失 —— 玩家需要看到「他死了」
+      // 倒地而不是凭空消失 —— 玩家需要看到「他死了」。
+      // 不隐藏枪：updateDeath 里 gunPivot.rotation.x = limp * 1.2 让枪
+      // 跟着身体一起垂落倒地；这里若 visible=false，身体在慢慢倒下、
+      // 枪却瞬间蒸发，两者视觉上自相矛盾。（枪挂手电已由
+      // startDeath 单独熄灭，不会出现「死人手电还亮着」。）
       this.rig.startDeath(dir ? dir.x : 0, dir ? dir.z : 1);
-      this.rig.gunPivot.visible = false;
       return true;                     // 击杀
     }
     return false;
@@ -590,8 +898,14 @@ export class Enemy {
      * 开着手电还安全，否则「打碎灯」这个决策就没有意义了。
      */
     const lampLit = this.lights ? this.lights.litAt(px, player.pos.y, pz) : false;
+    let lightMul = lampLit ? LIGHT.emergencyLamp.litDetectMul : flashlight.detectionMultiplier;
+    // chameleon：只打折「灯下 / 开灯」的暴露倍率，暗处仍走原 offDetectMul × shadowMul
+    if (lampLit || flashlight.on) {
+      lightMul *= (player.loadoutModifiers?.litExposureMul ?? 1);
+    }
     let range = perc().visionRange
-      * (lampLit ? LIGHT.emergencyLamp.litDetectMul : flashlight.detectionMultiplier);
+      * lightMul
+      * (player.loadoutModifiers?.detectionMult ?? 1);
     if (this.archetype === ARCHETYPE.SENTRY) range *= PERCEPTION.sentryRangeMul;
     // 手电与应急灯都没照到 → 藏在阴影里，更难被发现
     if (!flashlight.on && !lampLit) range *= PERCEPTION.shadowMul;
@@ -619,8 +933,9 @@ export class Enemy {
    *             config.NOISE_SPIKE_THRESHOLD）。true 时 IDLE 敌人
    *             跳过慢悠悠的 INVESTIGATE，直接举枪进入 ALERT ——
    *             霰弹/DMR 的枪声就是这么大，听到不该只是「走过去看看」。
+   * @param isFootstep 是否为脚步声。脚步噪音不穿墙（需要 LOS 或开放路径）。
    */
-  hearNoise(x, y, z, radius, loud = false, world = null) {
+  hearNoise(x, y, z, radius, loud = false, world = null, isFootstep = false) {
     if (this.dead || this.state === STATE.COMBAT) return false;
     const p = perc();
     const dy = Math.abs(y - this.pos.y);
@@ -648,12 +963,28 @@ export class Enemy {
     const w = world ?? this.world;
     if (w) {
       const layers = countOpaqueLayers(w, x, y + 0.6, z, this.pos.x, this.eyeY, this.pos.z);
+      /**
+       * ── 脚步噪音：不穿墙 ──
+       *
+       * 脚步与枪声的传播方式完全不同。枪声是爆炸性脉冲，能隔墙传递闷响；
+       * 脚步是结构振动，只在开放空间或薄门缝传播。
+       *
+       * 实现：隔超过 1 层墙直接听不到（不只是衰减）。「1 层」覆盖开着的门
+       * （门是空气，算 0 层）和半掩的门（薄门板，算 1 层），但完全隔断
+       * 厚实墙体（2 格 = 2 层）。这让「关门挡脚步」成为真正的潜行工具。
+       */
+      if (isFootstep && layers > 1) return false;
       effective *= Math.pow(PERCEPTION.noiseWallMul, layers);
     }
 
     const d = Math.hypot(x - this.pos.x, y - this.pos.y, z - this.pos.z);
     if (d > effective) return false;
+    // A new stimulus supersedes a pending return-home route as well as any
+    // blocked cross-room plan; the next investigation must honor this clue.
+    this.clearReturnHome();
     this.investigateTarget = new THREE.Vector3(x, y, z);
+    this.clearCrossRoomPlan();
+    this.crossBlocked = false;
     // 记下噪音来源，供 doInvestigate 判断「到了以后要不要往房间深处搜」
     this.searchOrigin = new THREE.Vector3(x, y, z);
     if (this.state === STATE.IDLE) {
@@ -671,6 +1002,8 @@ export class Enemy {
   onCalled(x, y, z) {
     if (this.dead || this.state === STATE.COMBAT) return;
     this.alerted = true;
+    this.clearReturnHome();
+    this.clearCrossRoomPlan();
     this.investigateTarget = new THREE.Vector3(x, y, z);
     if (this.state === STATE.IDLE) { this.state = STATE.INVESTIGATE; this.stateTime = 0; }
   }
@@ -708,6 +1041,29 @@ export class Enemy {
 
     this.updateAlert(dt, sees, spotsLight, flashlight);
 
+    /**
+     * ── 脚步噪音听觉检测（每帧）──
+     *
+     * 玩家移动时持续发出噪音，敌人每帧检查是否在听觉范围内。
+     * 与枪声不同，脚步噪音不穿墙（hearNoise 的 isFootstep 分支处理）。
+     *
+     * 为什么要每帧检查：脚步是连续噪音，不是脉冲事件。玩家走近时敌人应该
+     * 逐渐察觉，而不是「踩到某个格子才触发」。移动速度阈值在 player.noiseRadius
+     * 里已经处理（静止时返回 0），这里只需要判断半径是否 > 0。
+     *
+     * 战斗中不响应脚步声（已经在交火了，脚步无关紧要）；致盲时也不响应
+     * （感官失效）。其它状态（IDLE / INVESTIGATE / ALERT）都会因为脚步转向。
+     */
+    if (this.state !== STATE.COMBAT && this.state !== STATE.BLINDED) {
+      const footstepRadius = player.noiseRadius;
+      if (footstepRadius > 0) {
+        this.hearNoise(
+          player.pos.x, player.pos.y, player.pos.z,
+          footstepRadius, false, this.world, true
+        );
+      }
+    }
+
     switch (this.state) {
       case STATE.BLINDED:
         // 致盲：无法射击，原地转身
@@ -719,7 +1075,7 @@ export class Enemy {
         break;
 
       case STATE.IDLE:
-        this.doIdle(dt, sees, spotsLight, player);
+        this.doIdle(dt, sees, spotsLight, player, now);
         break;
 
       case STATE.INVESTIGATE:
@@ -761,16 +1117,21 @@ export class Enemy {
     this.moveSpeed = 0;      // 由 moveToward 每帧重新置位
   }
 
-  doIdle(dt, sees, spotsLight, player) {
+  doIdle(dt, sees, spotsLight, player, now = 0) {
     /**
      * 盾兵是守点，不参加普通敌人的左右扫视。否则他会在玩家还没接近时
      * 随机把护盾转向墙面，玩家绕进来却正好得到免费背刺，招牌敌人的
      * 「正面封锁」就变成纯随机。固定面朝由关卡配置给定；真正看见人后
      * 仍会以 turnRateMul 0.45 缓慢转身，绕后依然有意义。
      */
-    if (this.isShield) return;
+    if (this.behaviorMode === 'patrol') {
+      this.walkPatrol(dt);
+    } else if (this.behaviorMode === 'wander') {
+      this.doWander(dt, now);
+    } else if (this.isShield) return;
 
-    if (this.isAmbusher) {
+    if (this.isAmbusher && this.behaviorMode !== 'wander'
+        && this.behaviorMode !== 'patrol') {
       /**
        * 伏击者：蹲在掩体后不动，玩家靠近或被看见 → 站起来反击。
        *
@@ -792,11 +1153,8 @@ export class Enemy {
       return;
     }
 
-    if (this.patrol) {
-      this.walkPatrol(dt);
-    } else if (this.isAmbusher) {
-      // 伏击者理论上不会走到这个分支（doIdle 顶部已经 return），保留只为防御。
-    } else {
+    if (this.behaviorMode !== 'patrol' && this.behaviorMode !== 'wander') {
+
       /**
        * 蹲守者：持续左右扫视（含手电），不再是「定住→甩头→定住」。
        *
@@ -807,15 +1165,28 @@ export class Enemy {
        */
       this.scanShiftTimer -= dt;
       if (this.scanShiftTimer <= 0) {
-        this.scanShiftTimer = 8 + Math.random() * 4;
+        this.scanShiftTimer = 8 + this.random() * 4;
         this.scanCenter = this.pickOpenDirection();
       } else if (this.facesWall(this.scanCenter, 1.4)) {
         // 中心本身朝墙（比如刚经历过 escapeIfStuck）：提前换一次，不等定时器
         this.scanCenter = this.pickOpenDirection();
       }
       this.scanPhase += dt * (Math.PI * 2 / PERCEPTION.scanPeriod);
-      const target = this.scanCenter + Math.sin(this.scanPhase) * PERCEPTION.scanAmplitudeRad;
+      let target = this.scanCenter + Math.sin(this.scanPhase) * PERCEPTION.scanAmplitudeRad;
+      // Keep the sweep itself out of a wall, rather than waiting for the
+      // smoothed yaw to catch up after it has already turned into one.
+      if (this.facesWall(target, 1.4)) {
+        const open = this.pickOpenDirection(Math.PI);
+        if (!this.facesWall(open, 1.4)) {
+          this.scanCenter = open;
+          target = open;
+        }
+      }
       this.yaw += angleDiff(target, this.yaw) * Math.min(1, dt * PERCEPTION.turnRateSearch);
+      if (this.facesWall(this.yaw, 1.4)) {
+        const open = this.pickOpenDirection(Math.PI);
+        if (!this.facesWall(open, 1.4)) this.yaw = open;
+      }
     }
 
     if (sees) this.toAlert();
@@ -855,7 +1226,7 @@ export class Enemy {
 
     // 有开阔方向就随机挑一个 —— 每次都选「最远」会让敌人反复盯同一处，
     // 随机化让扫视看起来像在真的巡视房间。
-    if (open.length > 0) return open[(Math.random() * open.length) | 0];
+    if (open.length > 0) return open[(this.random() * open.length) | 0];
 
     // 整个扇区都贴墙（敌人被塞在角落里）→ 全向搜索一个能看得远的方向
     if (bestDist < 3.5 && spreadRad < Math.PI) {
@@ -872,10 +1243,46 @@ export class Enemy {
   }
 
   doInvestigate(dt, sees, ctx = null, now = 0) {
-    if (sees) { this.toAlert(); return; }
+    if (sees) { this.clearReturnHome(); this.toAlert(); return; }
     this.standUp();          // 起身查看，不会蹲着走路
+    if (this.returnHome.active) {
+      this.doReturnHome(dt, ctx, now);
+      return;
+    }
     const p = perc();
     const mv = { doors: ctx?.doors, now };
+    const nav = this.navigation;
+    const currentRoom = nav?.getRoomAt?.(this.pos.x, this.pos.z);
+    const targetRoom = this.investigateTarget && nav?.getRoomAt?.(
+      this.investigateTarget.x, this.investigateTarget.z
+    );
+    const crossTarget = this.canCrossRooms && nav && this.investigateTarget
+      && (!currentRoom || !targetRoom || currentRoom !== targetRoom);
+    if (crossTarget) {
+      if (this.pathRevision !== nav.doorRevision) {
+        this.clearCrossRoomPlan();
+        this.pathRevision = nav.doorRevision;
+      }
+      // A failed cross-room target is suspended, rather than handed to the
+      // local steering fallback which could push through an arbitrary wall.
+      if (this.crossBlocked) {
+        this.investigateTarget = null;
+      } else if (now >= this.crossFailureUntil) {
+        if (!this.crossPlan) this.planCrossRoom(this.investigateTarget, 'investigate');
+        if (this.crossPlan) {
+          const status = this.moveCrossRoom(dt, 1.5 + p.pushChance * 1.2, now, 'investigate');
+          if (status === 'arrived') this.investigateTarget = null;
+          if (status !== 'failed') return;
+        }
+        this.crossFailureUntil = now + 1.2;
+        this.crossBlocked = true;
+        this.investigateTarget = null;
+      } else {
+        // A cooldown is also a hard no-go for direct steering, even if an
+        // external caller cleared the marker but retained the suspended timer.
+        this.investigateTarget = null;
+      }
+    }
     if (this.investigateTarget) {
       // 查房速度：难度越凶走得越快（专家档几乎是小跑着冲进来）
       const speed = 1.5 + p.pushChance * 1.2;
@@ -887,41 +1294,49 @@ export class Enemy {
          *
          * 只走到噪音点就停下的话，玩家只要开完枪往房间里退两步就绝对安全 ——
          * 敌人会站在门口环视几秒然后回去巡逻。往里推进才让「他们会来查房」
-         * 这件事真的有威胁：躲在房间角落也会被找出来。
+         * 这件事真的有威胁：敌人会沿着能走的方向往房间里推。
          */
         if (p.searchRooms) {
           const next = this.pickSearchPoint();
           if (next) this.investigateTarget = next;
         }
-        // 刚到达（不再继续搜房）→ 从当前朝向开始张望，而不是沿用出生朝向
         if (!this.investigateTarget) {
           this.investScanCenter = this.yaw;
           this.investScanPhase = 0;
         }
       }
     } else {
-      /**
-       * 没有目标点：持续左右张望找人，同一套摆动机制，
-       * 振幅更大（±50°）、周期更短（3s）—— 「在找人」该比蹲守站岗更急切。
-       */
+      /** 没有目标点：持续左右张望找人。 */
       this.investScanPhase += dt * (Math.PI * 2 / PERCEPTION.investScanPeriod);
       const target = this.investScanCenter
         + Math.sin(this.investScanPhase) * PERCEPTION.investScanAmplitudeRad;
       this.yaw += angleDiff(target, this.yaw) * Math.min(1, dt * PERCEPTION.turnRateSearch);
+      this.lookYaw = this.yaw;
     }
     if (this.stateTime > p.investigateTime) {
-      // 调查超时 → 回到常态行为。巡逻者继续走路线，
-      // 蹲守者回到岗位朝向（而不是留在原地朝着刚才乱转的方向）
+      // Wander/patrol actors with room navigation return to their own birth
+      // anchor. Legacy actors retain the original local investigation ending.
+      if (this.beginReturnHome(now)) {
+        this.doReturnHome(dt, ctx, now);
+        return;
+      }
       this.state = STATE.IDLE;
       this.stateTime = 0;
       this.investigateTarget = null;
-      // 重置两套扫视状态，回到 IDLE 后从当前朝向开始重新摆
       this.scanCenter = this.yaw;
       this.scanPhase = 0;
-      this.scanShiftTimer = 8 + Math.random() * 4;
+      this.scanShiftTimer = 8 + this.random() * 4;
       this.investScanCenter = this.yaw;
       this.investScanPhase = 0;
-      if (this.patrol) this.patrolIdx = this.nearestPatrolIndex();
+      if (this.behaviorMode === 'wander') {
+        this.wanderTarget = null;
+        this.wanderPath = [];
+        this.wanderWaypointIndex = 0;
+        this.wanderStall = 0;
+        this.wanderPause = 0.8;
+      } else if (this.patrol) {
+        this.patrolIdx = this.nearestPatrolIndex();
+      }
     }
   }
 
@@ -939,8 +1354,8 @@ export class Enemy {
     let best = null, bestScore = -Infinity;
     for (let i = 0; i < 12; i++) {
       // 以当前朝向为中心撒开，偏向正前方
-      const ang = this.yaw + (Math.random() - 0.5) * Math.PI * 1.2;
-      const dist = 3 + Math.random() * 5;
+      const ang = this.yaw + (this.random() - 0.5) * Math.PI * 1.2;
+      const dist = 3 + this.random() * 5;
       const tx = this.pos.x - Math.sin(ang) * dist;
       const tz = this.pos.z - Math.cos(ang) * dist;
       if (this.blockedAt(tx, tz)) continue;
@@ -955,6 +1370,468 @@ export class Enemy {
     return best;
   }
 
+  clearCrossRoomPlan() {
+    this.crossPlan = null;
+    this.crossPlanIndex = 0;
+    this.crossPhase = 'idle';
+    this.crossWait = 0;
+    this.crossDoorRetries = 0;
+    this.crossBlocked = false;
+  }
+
+  crossRoomDelay(kind = 'wander') {
+    const ranges = {
+      wander: [0.35, 0.55],
+      investigate: [0.2, 0.4],
+      combat: [0.25, 0.45],
+    };
+    const [min, max] = ranges[kind] ?? ranges.wander;
+    return min + this.random() * (max - min);
+  }
+
+  /** Build one bounded, sequential plan from the current room to a target. */
+  planCrossRoom(target, kind = 'wander', allowedRooms = null) {
+    const nav = this.navigation;
+    if (!this.canCrossRooms || !nav?.findDoorPath || !this.validWanderPoint(target)) return null;
+    const fromRoom = nav.getRoomAt?.(this.pos.x, this.pos.z);
+    const targetRoom = nav.getRoomAt?.(target.x, target.z);
+    if (!fromRoom || !targetRoom || fromRoom === targetRoom) return null;
+    if (Array.isArray(allowedRooms) && allowedRooms.length > 0
+        && !allowedRooms.includes(targetRoom)) return null;
+    const path = nav.findDoorPath(fromRoom, targetRoom);
+    if (!path?.links?.length || path.rooms?.[0] !== fromRoom) return null;
+
+    const steps = path.links.map((link, index) => {
+      const forward = path.rooms[index] === link.from;
+      const staging = Array.isArray(link.staging) ? link.staging : [];
+      const entry = staging[forward ? 0 : 1];
+      const exit = staging[forward ? 1 : 0];
+      if (!this.validWanderPoint(entry) || !this.validWanderPoint(exit)) return null;
+      const passage = link.door && typeof link.door === 'object'
+        ? (link.door.through === 'z'
+          ? { x: link.door.x + (Number(link.door.span ?? 1) / 2), z: link.door.z + 0.5 }
+          : { x: link.door.x + 0.5, z: link.door.z + (Number(link.door.thick ?? 1) / 2) })
+        : (link.opening && typeof link.opening === 'object'
+          ? (link.opening.through === 'z'
+            ? { x: link.opening.x + (Number(link.opening.span ?? 1) / 2), z: link.opening.z + (Number(link.opening.thick ?? 1) / 2) }
+            : { x: link.opening.x + (Number(link.opening.thick ?? 1) / 2), z: link.opening.z + (Number(link.opening.span ?? 1) / 2) })
+          : exit);
+      if (!this.validWanderPoint(passage)) return null;
+      return {
+        link,
+        fromRoom: path.rooms[index],
+        toRoom: path.rooms[index + 1],
+        entry,
+        passage,
+        exit,
+        door: link.door ?? null,
+      };
+    });
+    if (steps.some((step) => !step)) return null;
+    const plan = {
+      fromRoom, targetRoom, target: new THREE.Vector3(target.x, this.pos.y, target.z),
+      steps, stepIndex: 0, path: [], pathIndex: 0, phase: 'entry',
+      kind, revision: nav.doorRevision, wait: 0, failures: 0,
+    };
+    if (!this.setCrossLocalPath(plan, { x: this.pos.x, z: this.pos.z }, steps[0].entry)) {
+      return null;
+    }
+    this.crossPlan = plan;
+    this.crossPlanIndex = 0;
+    this.crossPhase = 'entry';
+    this.crossBlocked = false;
+    this.pathRevision = nav.doorRevision;
+    return plan;
+  }
+
+  setCrossLocalPath(plan, start, goal) {
+    const nav = this.navigation;
+    const roomId = nav?.getRoomAt?.(start.x, start.z);
+    const goalRoom = nav?.getRoomAt?.(goal.x, goal.z);
+    if (!roomId || roomId !== goalRoom || !nav?.findLocalPath) return false;
+    const path = nav.findLocalPath(start, goal, {
+      roomId, maxNodes: 192, maxDistance: 48,
+    });
+    if (!Array.isArray(path) || path.length === 0
+        || path.some((point) => !this.validWanderPoint(point))) return false;
+    plan.path = path;
+    plan.pathIndex = 0;
+    return true;
+  }
+
+  /** Move the current cross-room plan one bounded stage at a time. */
+  moveCrossRoom(dt, speed, now, kind = 'wander') {
+    const plan = this.crossPlan;
+    const nav = this.navigation;
+    if (!plan || !nav) return 'failed';
+    if (plan.revision !== nav.doorRevision) {
+      this.clearCrossRoomPlan();
+      this.pathRevision = nav.doorRevision;
+      return 'replan';
+    }
+    const step = plan.steps[plan.stepIndex];
+    if (!step) {
+      const d = Math.hypot(plan.target.x - this.pos.x, plan.target.z - this.pos.z);
+      if (d < 0.6) { this.clearCrossRoomPlan(); return 'arrived'; }
+      if (plan.phase !== 'goal') {
+        if (!this.setCrossLocalPath(plan, { x: this.pos.x, z: this.pos.z }, plan.target)) {
+          this.clearCrossRoomPlan(); return 'failed';
+        }
+        plan.phase = 'goal';
+      }
+    }
+
+    if (plan.phase === 'entry' || plan.phase === 'goal') {
+      const waypoint = plan.path[plan.pathIndex];
+      if (!waypoint) {
+        if (plan.phase === 'goal') { this.clearCrossRoomPlan(); return 'arrived'; }
+        plan.phase = 'door';
+      } else {
+        const arrived = this.moveToward(waypoint, dt, speed);
+        if (arrived || Math.hypot(waypoint.x - this.pos.x, waypoint.z - this.pos.z) < 0.12) {
+          if (plan.pathIndex < plan.path.length - 1) plan.pathIndex += 1;
+          else if (plan.phase === 'entry') plan.phase = 'door';
+          else { this.clearCrossRoomPlan(); return 'arrived'; }
+        }
+        return 'moving';
+      }
+    }
+
+    if (plan.phase === 'door') {
+      const door = step.door && this.services.doors?.byKey
+        ? this.services.doors.byKey(step.link.doorKey ?? step.door) : null;
+      const needsOpen = !!door && !door.destroyed && !door.open;
+      if (step.link.requiresOpen && !door) {
+        plan.failures = (plan.failures ?? 0) + 1;
+        if (plan.failures >= 3) {
+          this.clearCrossRoomPlan();
+          return 'failed';
+        }
+        plan.wait = 0.45 + this.random() * 0.25;
+        return 'blocked';
+      }
+      if (!needsOpen) {
+        plan.phase = 'cross';
+      } else {
+        if (plan.wait <= 0) {
+          plan.wait = this.crossRoomDelay(kind);
+          this.crossWait = plan.wait;
+          // The first frame at the door starts the pause; do not consume part
+          // of the product-defined pause before the actor has visibly stopped.
+          return 'waiting';
+        }
+        plan.wait -= dt;
+        this.crossWait = Math.max(0, plan.wait);
+        if (plan.wait > 0) return 'waiting';
+        const opened = this.services.doors?.requestAIOpen?.(door, this, {
+          navigation: nav,
+          onDoorNoise: this.services.onDoorNoise,
+        });
+        if (!opened) {
+          plan.failures = (plan.failures ?? 0) + 1;
+          plan.wait = 0.45 + this.random() * 0.25;
+          this.crossDoorRetries = plan.failures;
+          if (plan.failures >= 3) {
+            this.clearCrossRoomPlan();
+            return 'failed';
+          }
+          return 'blocked';
+        }
+        // Keep the old plan revision. The next frame observes the increment and
+        // discards every cached local segment, including the segment behind the
+        // door that just changed state.
+        return 'opened';
+      }
+    }
+
+    if (plan.phase === 'cross') {
+      // Unlike ordinary steering, crossing must reach the far staging point;
+      // stopping 0.6 vox away leaves the actor inside the door gap.
+      const arrived = this.moveToward(step.exit, dt, speed, { arrivalDistance: 0.12 });
+      if (!arrived) return 'crossing';
+      plan.stepIndex += 1;
+      if (plan.stepIndex >= plan.steps.length) {
+        plan.phase = 'goal';
+        if (!this.setCrossLocalPath(plan, { x: this.pos.x, z: this.pos.z }, plan.target)) {
+          this.clearCrossRoomPlan(); return 'failed';
+        }
+      } else {
+        const next = plan.steps[plan.stepIndex];
+        plan.phase = 'entry';
+        if (!this.setCrossLocalPath(plan, { x: this.pos.x, z: this.pos.z }, next.entry)) {
+          this.clearCrossRoomPlan(); return 'failed';
+        }
+      }
+      return 'crossed';
+    }
+    return 'moving';
+  }
+
+  chooseCrossWanderTarget() {
+    const nav = this.navigation;
+    const currentRoom = nav?.getRoomAt?.(this.pos.x, this.pos.z) ?? this.anchorRoom;
+    if (!nav || !currentRoom) return null;
+    const candidates = (this.wanderRooms.length > 0
+      ? this.wanderRooms : [currentRoom, this.anchorRoom]).filter((room, index, list) =>
+        room && room !== currentRoom && list.indexOf(room) === index
+        && nav.getRoomNodes?.(room)?.length > 0);
+    if (candidates.length === 0) return null;
+    const room = candidates[Math.floor(this.random() * candidates.length)];
+    const nodes = nav.getRoomNodes(room).filter((node) => this.validWanderPoint(node));
+    if (nodes.length === 0) return null;
+    const start = Math.floor(this.random() * nodes.length);
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[(start + i) % nodes.length];
+      const target = new THREE.Vector3(node.x, this.pos.y, node.z);
+      if (this.planCrossRoom(target, 'wander', this.wanderRooms.length ? this.wanderRooms : null)) {
+        this.wanderTarget = target;
+        this.wanderPath = [];
+        this.wanderWaypointIndex = 0;
+        return target;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Choose a legal local target for Wander. Room links are consulted only for
+   * explicitly enabled cross-room Wander specs.
+   */
+  chooseWanderTarget() {
+    if (this.canCrossRooms) {
+      const crossTarget = this.chooseCrossWanderTarget();
+      if (crossTarget) return crossTarget;
+    }
+    const nav = this.navigation;
+    this.ensureWanderContext();
+    if (!nav || typeof nav.getRoomNodes !== 'function'
+        || typeof nav.findLocalPath !== 'function') {
+      this.wanderTarget = null;
+      this.wanderPath = [];
+      this.wanderWaypointIndex = 0;
+      return null;
+    }
+
+    const roomId = nav.getRoomAt?.(this.pos.x, this.pos.z) ?? this.anchorRoom;
+    if (!roomId) {
+      this.wanderTarget = null;
+      this.wanderPath = [];
+      this.wanderWaypointIndex = 0;
+      this.wanderPause = Math.max(this.wanderPause, 0.8);
+      return null;
+    }
+    const nodes = nav.getRoomNodes(roomId);
+    if (!Array.isArray(nodes) || nodes.length === 0) {
+      this.wanderTarget = null;
+      this.wanderPath = [];
+      this.wanderWaypointIndex = 0;
+      this.wanderPause = Math.max(this.wanderPause, 0.8);
+      return null;
+    }
+
+    const history = Array.isArray(this.wanderRecentTargets)
+      ? this.wanderRecentTargets.slice(-8) : [];
+    const recent = history.slice(-3);
+    const point = (value) => Array.isArray(value)
+      ? { x: Number(value[0]), z: Number(value[1]) }
+      : { x: Number(value?.x), z: Number(value?.z) };
+    const distance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+    const anchor = { x: this.anchor.x, z: this.anchor.z };
+    const current = { x: this.pos.x, z: this.pos.z };
+    const maxDistance = Number.isFinite(this.homeRadius) ? this.homeRadius : 5;
+
+    // The stable source order from NavigationIndex is retained; RNG only picks
+    // which candidate to try next, making a seeded sequence reproducible.
+    const candidates = nodes.filter((node) => {
+      const p = point(node);
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.z)) return false;
+      if (distance(anchor, p) > maxDistance + 1e-6) return false;
+      if (typeof nav.isWalkablePoint === 'function' && !nav.isWalkablePoint(
+        p.x, p.z, { roomId, y: this.pos.y, entityRadius: this.radius, entityHeight: this.height }
+      )) return false;
+      return true;
+    });
+
+    let attemptsRemaining = 18;
+    const find = (pool, minCurrent, minRecent) => {
+      const available = pool.filter((node) => {
+        const p = point(node);
+        return distance(current, p) >= minCurrent
+          && recent.every((old) => distance(point(old), p) >= minRecent);
+      });
+      const limit = Math.min(attemptsRemaining, available.length);
+      for (let i = 0; i < limit; i++) {
+        attemptsRemaining -= 1;
+        const index = Math.floor(this.random() * available.length);
+        const [node] = available.splice(index, 1);
+        const p = point(node);
+        const path = nav.findLocalPath(
+          { x: this.pos.x, z: this.pos.z }, p,
+          { roomId, maxNodes: 96, maxDistance: 14 }
+        );
+        if (!Array.isArray(path) || path.length === 0) continue;
+        if (path.some((waypoint) => !this.validWanderPoint(waypoint))) continue;
+        if (path.some((waypoint) => distance(anchor, point(waypoint)) > maxDistance + 1e-6)) continue;
+        const target = new THREE.Vector3(p.x, this.pos.y, p.z);
+        this.wanderTarget = target;
+        this.wanderPath = path.slice();
+        this.wanderWaypointIndex = 0;
+        this.wanderStall = 0;
+        this.wanderRecentTargets = [...history, { x: p.x, z: p.z }].slice(-8);
+        return target;
+      }
+      return null;
+    };
+
+    let target = find(candidates, 4, 2.5);
+    if (!target) {
+      // A cramped room can legitimately exhaust the strict filters. Relax only
+      // after the bounded 18-attempt pass, then cool down if no path exists.
+      target = find(candidates, 2.5, 1.25);
+    }
+    if (!target) {
+      this.wanderTarget = null;
+      this.wanderPath = [];
+      this.wanderWaypointIndex = 0;
+      this.wanderPause = Math.max(this.wanderPause, 0.8);
+    }
+    return target;
+  }
+
+  beginWanderPause() {
+    this.wanderTarget = null;
+    this.wanderPath = [];
+    this.wanderWaypointIndex = 0;
+    this.wanderStall = 0;
+    this.wanderPause = 1.2 + this.random() * 1.4;
+    this.wanderScanCenter = this.yaw;
+    this.wanderScanPhase = 0;
+    this.wanderScanAmplitude = (25 + this.random() * 25) * Math.PI / 180;
+  }
+
+  /** Wander fallback uses the same continuous, wall-aware idle scan as Sentry. */
+  doWanderFallbackScan(dt) {
+    this.scanShiftTimer -= dt;
+    if (this.scanShiftTimer <= 0) {
+      this.scanShiftTimer = 8 + this.random() * 4;
+      this.scanCenter = this.pickOpenDirection();
+    } else if (this.facesWall(this.scanCenter, 1.4)) {
+      this.scanCenter = this.pickOpenDirection();
+    }
+    this.scanPhase += dt * (Math.PI * 2 / PERCEPTION.scanPeriod);
+    const target = this.scanCenter + Math.sin(this.scanPhase) * PERCEPTION.scanAmplitudeRad;
+    this.yaw += angleDiff(target, this.yaw) * Math.min(1, dt * PERCEPTION.turnRateSearch);
+  }
+
+  doWander(dt, now = 0) {
+    if (this.state !== STATE.IDLE || this.behaviorMode !== 'wander') return;
+    const nav = this.navigation;
+    this.ensureWanderContext();
+    if (!nav || typeof nav.getRoomNodes !== 'function'
+        || typeof nav.findLocalPath !== 'function') {
+      this.doWanderFallbackScan(dt);
+      return;
+    }
+
+    if (this.pathRevision !== nav.doorRevision) {
+      // Door state changed. Keep the chosen room/target, but discard every
+      // local segment and rebuild the staged route from the current position.
+      this.clearCrossRoomPlan();
+      this.wanderPath = [];
+      this.wanderWaypointIndex = 0;
+      this.pathRevision = nav.doorRevision;
+    }
+
+    if (this.wanderPause > 0) {
+      this.wanderPause = Math.max(0, this.wanderPause - dt);
+      this.wanderScanPhase += dt * (Math.PI * 2 / this.wanderScanPeriod);
+      const targetYaw = this.wanderScanCenter
+        + Math.sin(this.wanderScanPhase) * this.wanderScanAmplitude;
+      this.yaw += angleDiff(targetYaw, this.yaw)
+        * Math.min(1, dt * PERCEPTION.turnRateSearch);
+      if (this.wanderPause > 0) return;
+    }
+
+    const currentRoom = nav.getRoomAt?.(this.pos.x, this.pos.z) ?? this.anchorRoom;
+    const targetRoom = this.wanderTarget
+      ? nav.getRoomAt?.(this.wanderTarget.x, this.wanderTarget.z) : null;
+    if (this.canCrossRooms && this.crossPlan) {
+        const status = this.moveCrossRoom(dt, 1.15, now, 'wander');
+
+      if (status === 'arrived') this.beginWanderPause();
+      else if (status === 'failed') {
+        this.wanderTarget = null;
+        this.wanderPause = 0.8;
+      }
+      return;
+    }
+    if (this.canCrossRooms && (!this.wanderTarget || !this.crossPlan)) {
+      const targetRoomId = this.wanderTarget
+        ? nav.getRoomAt?.(this.wanderTarget.x, this.wanderTarget.z) : null;
+      if (targetRoomId && targetRoomId !== currentRoom) {
+        this.planCrossRoom(this.wanderTarget, 'wander',
+          this.wanderRooms.length ? this.wanderRooms : null);
+      } else if (this.chooseCrossWanderTarget()) {
+        return;
+      }
+      if (this.crossPlan) return;
+    }
+
+    if (!this.wanderTarget || !Array.isArray(this.wanderPath)
+        || this.wanderWaypointIndex >= this.wanderPath.length) {
+      if (!this.chooseWanderTarget()) return;
+    }
+
+    const target = this.wanderTarget;
+    const roomId = nav.getRoomAt?.(this.pos.x, this.pos.z) ?? this.anchorRoom;
+    if (!this.validWanderPoint(target)
+        || (this.anchorRoom && roomId && roomId !== this.anchorRoom)
+        || Math.hypot(target.x - this.anchor.x, target.z - this.anchor.z)
+          > this.homeRadius + 1e-6) {
+      this.wanderTarget = null;
+      this.wanderPath = [];
+      this.wanderWaypointIndex = 0;
+      this.wanderPause = 0.8;
+      return;
+    }
+
+    const waypoint = this.wanderPath[this.wanderWaypointIndex];
+    if (!this.validWanderPoint(waypoint)) {
+      this.wanderTarget = null;
+      this.wanderPath = [];
+      this.wanderWaypointIndex = 0;
+      this.wanderPause = 0.8;
+      return;
+    }
+    const beforeX = this.pos.x, beforeZ = this.pos.z;
+    const arrived = this.moveToward(waypoint, dt, 1.15);
+    const moved = Math.hypot(this.pos.x - beforeX, this.pos.z - beforeZ);
+    if (arrived) {
+      if (this.wanderWaypointIndex < this.wanderPath.length - 1) {
+        this.wanderWaypointIndex += 1;
+        this.wanderStall = 0;
+      } else if (Math.hypot(this.wanderTarget.x - this.pos.x,
+        this.wanderTarget.z - this.pos.z) < 0.6) {
+        this.beginWanderPause();
+      }
+      return;
+    }
+
+    const expected = 1.15 * dt * 0.2;
+    if (moved < expected) {
+      this.wanderStall += dt;
+      if (this.wanderStall > 5) {
+        this.wanderTarget = null;
+        this.wanderPath = [];
+        this.wanderWaypointIndex = 0;
+        this.wanderStall = 0;
+        this.wanderPause = 0.8;
+      }
+    } else {
+      this.wanderStall = 0;
+    }
+  }
+
   /** 回到巡逻路线时，从最近的路径点接上（不要横穿整个楼去追第 0 点） */
   nearestPatrolIndex() {
     let best = 0, bestD = Infinity;
@@ -966,15 +1843,139 @@ export class Enemy {
     return best;
   }
 
+  startCombatStrafe(player, now) {
+    if (this.state !== STATE.COMBAT || !this.combatStrafeEnabled
+        || this.isShield || this.isRusher || this.strafeActive || !player?.pos) return false;
+    if (now < this.nextStrafeAt) return false;
+    // Cooldown is set even when the random trigger declines, preventing a
+    // synchronized per-frame roll across multiple ordinary enemies.
+    this.nextStrafeAt = now + 2.2 + this.random() * 2.3;
+    if (this.random() >= 0.45) return false;
+    const dx = player.pos.x - this.pos.x, dz = player.pos.z - this.pos.z;
+    const distance = Math.hypot(dx, dz);
+    if (distance < 1e-4) return false;
+    const side = this.random() < 0.5 ? -1 : 1;
+    const offset = 0.6 + this.random() * 0.6;
+    const target = new THREE.Vector3(
+      this.pos.x + (-dz / distance) * side * offset,
+      this.pos.y,
+      this.pos.z + (dx / distance) * side * offset,
+    );
+    if (this.blockedAt(target.x, target.z)) return false;
+    this.strafeActive = true;
+    this.strafeTarget = target;
+    this.strafeSpeed = 0.8 + this.random() * 0.6;
+    this.strafeUntil = now + 0.45 + this.random() * 0.45;
+    return true;
+  }
+
+  updateCombatStrafe(dt, now, player) {
+    if (!this.strafeActive) return this.startCombatStrafe(player, now);
+    if (now >= this.strafeUntil || !this.strafeTarget) {
+      this.strafeActive = false;
+      this.strafeTarget = null;
+      return false;
+    }
+    const beforeX = this.pos.x, beforeZ = this.pos.z;
+    const arrived = this.moveToward(this.strafeTarget, dt, this.strafeSpeed,
+      { arrivalDistance: 0.08 });
+    const moved = Math.hypot(this.pos.x - beforeX, this.pos.z - beforeZ);
+    if (!arrived && moved < 1e-6) {
+      // A wall or closed doorway rejected the real movement. End only the
+      // side move; the caller continues the ordinary combat behavior.
+      this.strafeActive = false;
+      this.strafeTarget = null;
+      return false;
+    }
+    if (arrived || now + dt >= this.strafeUntil) {
+      this.strafeActive = false;
+      this.strafeTarget = null;
+    }
+    return moved > 1e-6;
+  }
+
   doCombat(dt, now, sees, ctx) {
     const { player, combat, flashlight } = ctx;
     const p = perc();
+    const nav = this.navigation;
+    const currentRoom = nav?.getRoomAt?.(this.pos.x, this.pos.z);
+    const visibleRoom = sees ? nav?.getRoomAt?.(player.pos.x, player.pos.z) : null;
+    const knownRoom = this.hasLastSeen ? nav?.getRoomAt?.(
+      this.lastSeenPlayer.x, this.lastSeenPlayer.z
+    ) : null;
+
+    // A visible target may move through an open doorway. Use the same staged
+    // room plan as investigation instead of steering through wall rectangles.
+    let crossMoving = false;
+    let crossTargetBlocked = false;
+    if (this.canCrossRooms && nav && currentRoom
+        && (!visibleRoom || visibleRoom !== currentRoom)) {
+      if (this.pathRevision !== nav.doorRevision) {
+        this.clearCrossRoomPlan();
+        this.pathRevision = nav.doorRevision;
+      }
+      if (this.crossPlan && this.crossPlan.targetRoom !== visibleRoom) {
+        this.clearCrossRoomPlan();
+      }
+      // crossBlocked limits only another traversal attempt. It must never
+      // suppress target-facing or firing while the player remains visible.
+      if (now >= this.crossFailureUntil) this.crossBlocked = false;
+      crossTargetBlocked = this.crossBlocked || now < this.crossFailureUntil;
+      if (!this.crossBlocked) {
+        if (!this.crossPlan) this.planCrossRoom(player.pos, 'combat');
+        if (this.crossPlan) {
+          const status = this.moveCrossRoom(dt, this.isRusher ? RUSHER_ENEMY.chargeSpeed : 1.6,
+            now, 'combat');
+          if (status !== 'failed') crossMoving = true;
+          else {
+            this.crossFailureUntil = now + 1.0;
+            this.crossBlocked = true;
+            crossTargetBlocked = true;
+          }
+        } else {
+          this.crossFailureUntil = now + 1.0;
+          this.crossBlocked = true;
+          crossTargetBlocked = true;
+        }
+      }
+    }
 
     if (!sees) {
       // 看不见玩家时只能朝「最后看见的位置」，不能跟着真实坐标转。
       // 隔着墙锁定玩家的话，玩家绕到墙后敌人枪口依然精准跟着走，一露头就被打。
       if (this.hasLastSeen) {
         this.faceToward(this.lastSeenPlayer, dt, PERCEPTION.turnRateSearch);
+      }
+
+      // Last-seen room pursuit is allowed, but the current player position is
+      // deliberately never used here. The snapshot is replanned only after a
+      // door revision or once the staged route is exhausted.
+      if (this.canCrossRooms && nav && currentRoom && knownRoom
+          && knownRoom !== currentRoom) {
+        if (this.pathRevision !== nav.doorRevision) {
+          this.clearCrossRoomPlan();
+          this.pathRevision = nav.doorRevision;
+        }
+        if (now >= this.crossFailureUntil) this.crossBlocked = false;
+        crossTargetBlocked = this.crossBlocked || now < this.crossFailureUntil;
+        if (!this.crossBlocked) {
+          if (!this.crossPlan) this.planCrossRoom(this.lastSeenPlayer, 'combat');
+          if (this.crossPlan) {
+            const status = this.moveCrossRoom(dt, this.isRusher ? RUSHER_ENEMY.chargeSpeed : 1.6,
+              now, 'combat');
+            // Traversal owns movement, but never owns the rest of combat.
+            if (status !== 'failed') crossMoving = true;
+            else {
+              this.crossFailureUntil = now + 1.0;
+              this.crossBlocked = true;
+              crossTargetBlocked = true;
+            }
+          } else {
+            this.crossFailureUntil = now + 1.0;
+            this.crossBlocked = true;
+            crossTargetBlocked = true;
+          }
+        }
       }
 
       /**
@@ -990,7 +1991,7 @@ export class Enemy {
       if (p.suppressChance > 0 && this.hasLastSeen
           && now >= this.nextShotAt && this.weapon.canFire(now)
           && !this.weapon.reloading && !this.weapon.isEmpty
-          && Math.random() < p.suppressChance) {
+          && this.random() < p.suppressChance) {
         this.weapon.consume(now);
         combat.enemyShoot(this, player, now, {
           // 朝「最后看见的位置」的大致方向，而不是玩家真实坐标
@@ -1012,7 +2013,10 @@ export class Enemy {
       if (flashlight && !flashlight.on) lose *= PERCEPTION.darkLoseTargetMul;
 
       if (this.stateTime > lose && this.hasLastSeen) {
-        // 去最后看见的位置搜索，而不是一直站着瞄
+        // Combat's staged route belongs to the live target. Once combat ends,
+        // discard it before investigating the snapshot so it cannot be reused
+        // for a different target or fall through to direct wall steering.
+        this.clearCrossRoomPlan();
         this.investigateTarget = this.lastSeenPlayer.clone();
         this.searchOrigin = this.lastSeenPlayer.clone();
         this.state = STATE.INVESTIGATE;
@@ -1040,29 +2044,35 @@ export class Enemy {
      * 玩家第一次看到他站起来/转向自己时仍有正常的反应窗口，
      * 这不是偷袭式的瞬间贴脸。
      */
-    if (this.isRusher) {
-      const gap = Math.hypot(player.pos.x - this.pos.x, player.pos.z - this.pos.z);
-      if (gap > RUSHER_ENEMY.stopDist) {
-        this.moveToward(player.pos, dt, RUSHER_ENEMY.chargeSpeed, { doors: ctx.doors, now });
-      }
-    } else if (p.pushChance > 0 && Math.random() < p.pushChance) {
-      /**
-       * ── 主动推进 ──
-       *
-       * 站桩对射对玩家最有利：距离固定、掩体固定，交火变成纯粹的比手速。
-       * 让敌人边打边压上来（保留 4 vox 的交火距离，不会贴脸糊成一团），
-       * 玩家必须持续调整站位。pushChance 是每帧的推进意愿，专家档 0.8
-       * 意味着几乎一直在压上来。
-       *
-       * 盾兵几乎不动（moveSpeedMul 0.35）：他的战术是挡在原地当墙，
-       * 压上来的话玩家反而更容易绕到他侧后方。
-       */
-      const gap = Math.hypot(player.pos.x - this.pos.x, player.pos.z - this.pos.z);
-      if (gap > 4) {
-        const spd = (1.6 + p.pushChance) * (this.isShield ? SHIELD_ENEMY.moveSpeedMul : 1);
-        this.moveToward(player.pos, dt, spd, { doors: ctx.doors, now });
+    // A staged route owns movement while crossing or while its retry cooldown is
+    // active. Direct steering is forbidden in both cases, but aiming and firing
+    // below continue normally.
+    if (!crossMoving && !crossTargetBlocked) {
+      const strafeMoved = this.updateCombatStrafe(dt, now, player);
+      if (!strafeMoved && !this.strafeActive && this.isRusher) {
+        const gap = Math.hypot(player.pos.x - this.pos.x, player.pos.z - this.pos.z);
+        if (gap > RUSHER_ENEMY.stopDist) {
+          this.moveToward(player.pos, dt, RUSHER_ENEMY.chargeSpeed, { doors: ctx.doors, now });
+        }
+      } else if (!strafeMoved && !this.strafeActive && !this.isRusher
+          && p.pushChance > 0 && this.random() < p.pushChance) {
+        /**
+         * ── 主动推进 ──
+         *
+         * 站桩对射对玩家最有利：距离固定、掩体固定，交火变成纯粹的比手速。
+         * 让敌人边打边压上来（保留 4 vox 的交火距离，不会贴脸糊成一团），
+         * 玩家必须持续调整站位。盾兵几乎不动，保留其守点身份。
+         */
+        const gap = Math.hypot(player.pos.x - this.pos.x, player.pos.z - this.pos.z);
+        if (gap > 4) {
+          const spd = (1.6 + p.pushChance) * (this.isShield ? SHIELD_ENEMY.moveSpeedMul : 1);
+          this.moveToward(player.pos, dt, spd, { doors: ctx.doors, now });
+        }
       }
     }
+    // Movement helpers update yaw toward their movement vector. Restore combat
+    // aim before firing so a side step never changes the shot direction.
+    this.faceTarget(player, dt, PERCEPTION.turnRateCombat * turnMul);
 
     // 换弹
     if (this.weapon.isEmpty) { this.weapon.startReload(now); return; }
@@ -1080,12 +2090,13 @@ export class Enemy {
   }
 
   toAlert() {
+    this.clearReturnHome();
     this.state = STATE.ALERT;
     this.stateTime = 0;
     this.standUp();          // 举枪前先站起来，姿态才读得懂
     const p = perc();
     this.reactionTimer = p.reactionMin
-      + Math.random() * (p.reactionMax - p.reactionMin);
+      + this.random() * (p.reactionMax - p.reactionMin);
   }
 
   callAllies(ctx) {
@@ -1121,7 +2132,8 @@ export class Enemy {
   moveToward(target, dt, speed, opts = null) {
     const dx = target.x - this.pos.x, dz = target.z - this.pos.z;
     const d = Math.hypot(dx, dz);
-    if (d < 0.6) return true;
+    const arrivalDistance = Number(opts?.arrivalDistance ?? 0.6);
+    if (d < (Number.isFinite(arrivalDistance) ? Math.max(0.02, arrivalDistance) : 0.6)) return true;
     const nx = dx / d, nz = dz / d;
     const want = Math.atan2(-nx, -nz);
     let diff = want - this.yaw;
@@ -1187,10 +2199,11 @@ export class Enemy {
     const probeZ = this.pos.z + dirZ * 0.7;
     const door = doors.nearest(probeX, this.pos.y + 1, probeZ, 1.3);
     if (!door || door.open) return false;
-    door.setOpen(true);
-    door.snap();
-    this.lastDoorAt = now;
-    return true;
+    const opened = doors.requestAIOpen
+      ? doors.requestAIOpen(door, this, { onDoorNoise: this.services.onDoorNoise })
+      : false;
+    if (opened) this.lastDoorAt = now;
+    return opened;
   }
 
   /**
@@ -1206,7 +2219,7 @@ export class Enemy {
       let dx = this.pos.x - o.pos.x, dz = this.pos.z - o.pos.z;
       let d = Math.hypot(dx, dz);
       if (d >= R) continue;
-      if (d < 1e-4) { dx = Math.random() - 0.5; dz = Math.random() - 0.5; d = 0.5; }
+      if (d < 1e-4) { dx = this.random() - 0.5; dz = this.random() - 0.5; d = 0.5; }
       const push = (R - d) / 2;
       const nx = dx / d, nz = dz / d;
       this.tryShift(nx * push, nz * push);

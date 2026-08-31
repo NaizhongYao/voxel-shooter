@@ -1,10 +1,9 @@
-import * as THREE from 'three';
-import { PALETTE } from '../config.js';
 import { BLOCK } from '../voxel/blocks.js';
+import { buildDoorway, DOOR_SPEC } from '../level/furniture.js';
 
 /**
  * 门：**铰链贴左右墙垛的双开门**，向室内侧开。
- * 没有铰链模型、没有把手、没有蒙皮（GDD 11 章）。
+ * 视觉模型由 level/furniture.js 的共享 doorway builder 提供，含门框、内嵌板和把手。
  *
  * 关闭时挡光挡视线挡子弹（往体素网格里写 BLOCK.DOOR），开启时移除。
  * 门的遮挡关系和墙完全一致，AI 视线判定与阴影贴图都自动正确。
@@ -14,7 +13,7 @@ import { BLOCK } from '../voxel/blocks.js';
  * 以前关门是往格子里写 BLOCK.WALL —— 那是个整格实心立方体，正好把薄门板
  * 完全包在里面，玩家看到的是一堵灰墙，既看不出是门、也不知道能按 E。
  * 现在写的是 BLOCK.DOOR（solid + opaque 但 render:false），
- * 挡住的职责归体素，外观的职责归门板网格，互不遮蔽。
+ * 挡住的职责归体素，外观的职责归细化门模型，互不遮蔽。
  *
  * ══ 相邻门格必须合并成「一个门洞」══
  *
@@ -48,29 +47,15 @@ import { BLOCK } from '../voxel/blocks.js';
  * 这正是真实双开门的行为。
  */
 
-const DOOR_THICK = 0.14;
-const OPEN_ANGLE = Math.PI / 2;
+const OPEN_ANGLE = DOOR_SPEC.openAngle;
 const OPEN_TIME = 0.35;          // 推门耗时
-const DOOR_H = 2;
+const DOOR_H = DOOR_SPEC.height;
 /** 门的耐久（累计伤害）。见 Door.damage —— 打烂后门洞永久畅通。 */
 export const DOOR_HP = 120;
 /**
- * 门板沿薄轴放在门格正中央（0.5 = 格心）。
- *
- * ══ 为什么必须居中，不能贴一侧 ══
- *
- * 曾经这里是 `DOOR_THICK / 2 + 0.01`，意思是「贴着门格靠小坐标那一面，
- * 再内缩一点躲开 z-fighting」。但门洞贯穿的是 2 格厚的墙：门板贴在靠近
- * 一侧的那 0.08 处，从另一面看过去，门板前面还留着将近一整格的空腔，
- * 而空腔两侧的墙面因为相邻格是 DOOR（render:false，不算不透光满高块）
- * 并没有被剔除掉 —— 于是从背面看，视线沿着这条缝越过门板边缘直接穿进
- * 隔壁房间。表现就是「同一扇门，一面正常、另一面能透视」。
- *
- * 居中之后门板在格内前后各留 0.43 的余量，两面看到的几何完全对称，
- * 也不与任何墙面共面，z-fighting 同样不会发生。
+ * 门模型的薄轴居中在门洞深度（由 buildDoorway/DOOR_SPEC.faceInset 统一定义），
+ * 让门的两面保持对称，且不与墙面共面。
  */
-const FACE_INSET = 0.5;
-
 export class Door {
   /**
    * @param spec { x, y, z, through, thick, span? }
@@ -95,66 +80,29 @@ export class Door {
      * 得多 —— 在 2 格厚的墙上反推必然出错。缺省时退回推断，兼容手写门规格。
      */
     this.through = spec.through ?? this.inferThrough();
+    this.interior = spec.interior ?? -1;
     this.thick = spec.thick ?? 1;
     /** 门洞总宽（格）。相邻门格被 DoorManager 合并后 span 才会 >1。 */
     this.span = spec.span ?? 1;
 
-    // 门洞沿 z 贯穿 ⇒ 墙沿 x 延伸 ⇒ 门板宽度在 x 轴上
-    const widthOnX = this.through === 'z';
-    /** 每扇门板的宽度：整个门洞对半分（1 格洞 → 0.5，2 格洞 → 1.0） */
-    const leafW = this.span / 2;
-    const geo = widthOnX
-      ? new THREE.BoxGeometry(leafW, DOOR_H, DOOR_THICK)
-      : new THREE.BoxGeometry(DOOR_THICK, DOOR_H, leafW);
-
-    // 双面可见：开到一半时从背面看不能变成空洞
-    const mat = new THREE.MeshLambertMaterial({
-      color: PALETTE.amber, side: THREE.DoubleSide,
+    // The detailed doorway owns its frame and two leaf meshes. Keep the
+    // legacy leaf shape as a small adapter for Door rotation/caller code.
+    const model = buildDoorway({
+      span: this.span, through: this.through, interior: this.interior,
+      wallThick: this.thick,
     });
+    this.root = model.root;
+    this.root.position.set(this.gx, this.gy, this.gz);
+    // Keep the static parent transform current for callers that update only a leaf pivot.
+    this.root.updateMatrixWorld(true);
+    this.leaves = model.leaves.map((leaf, index) => ({
+      pivot: leaf.group,
+      mesh: leaf.group.children.find((child) => child.isMesh) ?? leaf.group,
+      sign: index === 0 ? 1 : -1,
+      openAngle: leaf.angle,
+    }));
+    scene.add(this.root);
 
-    /**
-     * 双开门：两个铰链组，钉在**整个门洞最外侧**的两条竖边（紧贴左右墙垛），
-     * 向相反方向各转 90°，开门后都落在室内一侧。
-     * leaves[i] = { pivot, mesh, sign }。
-     */
-    this.leaves = [];
-    const mkLeaf = (pivotX, pivotZ, localX, localZ, sign) => {
-      const pivot = new THREE.Group();
-      pivot.position.set(pivotX, this.gy, pivotZ);
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.position.set(localX, DOOR_H / 2, localZ);
-      pivot.add(mesh);
-      scene.add(pivot);
-      this.leaves.push({ pivot, mesh, sign });
-    };
-
-    /**
-     * 铰链必须落在门板**自己的竖边**上，而且是整个门洞最外侧的那两条边
-     * （紧贴左右墙垛）。
-     *
-     * 之前把铰链原点放在门格角上、局部偏移同时给了展开轴和厚度轴，
-     * 结果门板是绕着「角点」扫的：开到 90° 后两片停在门洞跨度的中间
-     * （2 格宽门洞里停在 x=31.5 与 x=32.5），中间只剩 0.86 的缝 ——
-     * 玩家几乎过不去，也就是截图里两片门板立在通道中央的样子。
-     *
-     * 正确做法：铰链原点 = (最外侧竖边, 门板厚度轴中心)，局部偏移**只**沿
-     * 展开轴给半个扇宽。这样 θ=±90° 时门板绕自己的边扫进室内，
-     * 停在门洞最边上，跨度完全让开。
-     */
-    const halfLeaf = leafW / 2;
-    if (widthOnX) {
-      // 门洞沿 x 展开、门板在 z 上薄：铰链竖边在 x=gx 与 x=gx+span，
-      // 位于门格厚度轴中心 z=gz+0.5。室内在 z−1 侧，两扇都朝 −z 扫。
-      mkLeaf(this.gx,             this.gz + FACE_INSET,  halfLeaf, 0,  1);
-      mkLeaf(this.gx + this.span, this.gz + FACE_INSET, -halfLeaf, 0, -1);
-    } else {
-      // 门洞沿 z 展开、门板在 x 上薄：铰链竖边在 z=gz 与 z=gz+span，
-      // 位于 x=gx+0.5。室内在 x−1 侧，两扇都朝 −x 扫。
-      mkLeaf(this.gx + FACE_INSET, this.gz,             0,  halfLeaf, -1);
-      mkLeaf(this.gx + FACE_INSET, this.gz + this.span, 0, -halfLeaf,  1);
-    }
 
     // 关门状态：往网格里写 BLOCK.DOOR，挡住一切但不画整格立方体
     this.applyBlocking(true);
@@ -196,10 +144,15 @@ export class Door {
     this.open = true;               // 语义上等同「永远开着」
     this.anim = 1;
     this.applyBlocking(false);      // 网格清空（保留门框标记）
-    for (const leaf of this.leaves) {
-      leaf.pivot.removeFromParent?.();
-      leaf.mesh.geometry?.dispose?.();
+    const geometries = new Set();
+    this.root?.traverse?.((node) => {
+      if (node.isMesh && node.geometry) geometries.add(node.geometry);
+    });
+    this.root?.removeFromParent?.();
+    for (const geometry of geometries) {
+      if (!geometry.userData?.shared) geometry.dispose?.();
     }
+    this.root = null;
     this.leaves = [];
   }
 
@@ -284,7 +237,7 @@ export class Door {
   /** 把两扇门板转到当前 anim 对应的角度 */
   applyRotation() {
     for (const leaf of this.leaves) {
-      leaf.pivot.rotation.y = this.anim * OPEN_ANGLE * leaf.sign;
+      leaf.pivot.rotation.y = this.anim * (leaf.openAngle ?? OPEN_ANGLE * leaf.sign);
     }
   }
 
@@ -300,9 +253,10 @@ export class Door {
    * 关卡的 carveDoor 已经保证那一侧是房间净空。
    */
   swingCell() {
+    const side = this.interior < 0 ? -1 : 1;
     return this.through === 'z'
-      ? { x: this.gx, z: this.gz - 1 }
-      : { x: this.gx - 1, z: this.gz };
+      ? { x: this.gx, z: this.gz + side }
+      : { x: this.gx + side, z: this.gz };
   }
 
   update(dt) {
@@ -355,8 +309,12 @@ function groupDoorSpecs(specs) {
 }
 
 export class DoorManager {
-  constructor(scene, world, doorSpecs) {
+  constructor(scene, world, doorSpecs, options = {}) {
     this.doors = groupDoorSpecs(doorSpecs).map((s) => new Door(scene, world, s));
+    this.navigation = options.navigation ?? null;
+    this.actors = options.actors ?? null;
+    /** Called once when an AI successfully opens a door. */
+    this.onAIOpen = options.onAIOpen ?? null;
   }
 
   /** 找出玩家附近可交互的门 */
@@ -382,6 +340,47 @@ export class DoorManager {
       }
     }
     return null;
+  }
+
+  /**
+   * Resolve a runtime Door from NavigationIndex's stable doorKey. Navigation
+   * stores data-only door descriptions, so callers must not compare object
+   * identity between a link and a Door instance.
+   */
+  byKey(key) {
+    if (!key) return null;
+    const same = (door) => door && !door.destroyed
+      && Number(door.gx) === Number(key.x)
+      && Number(door.gy) === Number(key.y)
+      && Number(door.gz) === Number(key.z)
+      && door.through === key.through
+      && Number(door.thick ?? 1) === Number(key.thick ?? 1);
+    return this.doors.find(same) ?? null;
+  }
+
+  /**
+   * Request an AI-only open operation. The actor is not considered a blocker
+   * for its own request, while every other supplied actor is still checked.
+   * A successful request changes the voxel state immediately, invalidates the
+   * navigation cache once, and invokes exactly one open callback.
+   */
+  requestAIOpen(door, actor = null, opts = {}) {
+    const runtimeDoor = door?.cells ? door : this.byKey(door?.doorKey ?? door);
+    if (!runtimeDoor || runtimeDoor.destroyed || runtimeDoor.open) return false;
+    const source = opts.actors ?? this.actors ?? [];
+    const allActors = typeof source === 'function' ? source() : source;
+    const actors = Array.isArray(allActors)
+      ? allActors.filter((candidate) => candidate && candidate !== actor)
+      : [];
+    if (runtimeDoor.blockedByActor(actors)) return false;
+
+    runtimeDoor.setOpen(true);
+    runtimeDoor.snap?.();
+    const navigation = opts.navigation ?? this.navigation;
+    navigation?.invalidateDoors?.();
+    const callback = opts.onDoorNoise ?? this.onAIOpen;
+    callback?.(runtimeDoor, actor);
+    return true;
   }
 
   /**

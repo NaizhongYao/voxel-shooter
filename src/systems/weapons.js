@@ -99,6 +99,31 @@ export const WEAPONS = {
  */
 export const HITBOX_MULT = { head: 3.0, torso: 1.0, limb: 0.7 };
 
+function applyWeaponModifiers(spec, modifiers) {
+  return {
+    ...spec,
+    damage: spec.damage + (modifiers.damage ?? 0),
+    rof: Math.max(0.1, spec.rof + (modifiers.rof ?? 0)),
+    spread: Math.max(0.05, spec.spread + (modifiers.spread ?? 0)),
+    mag: Math.max(1, spec.mag + (modifiers.mag ?? 0)),
+    reload: Math.max(0.1, spec.reload * (1 + (modifiers.reload ?? 0))),
+    range: Math.max(1, spec.range + (modifiers.range ?? 0)),
+    noise: Math.max(0, spec.noise + (modifiers.noise ?? 0)),
+    recoil: {
+      ...spec.recoil,
+      kick: spec.recoil.kick * (modifiers.recoilKickMult ?? 1),
+      climb: spec.recoil.climb * (modifiers.recoilClimbMult ?? 1),
+      shake: spec.recoil.shake * (modifiers.recoilShakeMult ?? 1),
+    },
+    // 枪口焰缩放（消焰器效果）
+    muzzleScale: spec.muzzleScale * (modifiers.muzzleFlashMult ?? 1),
+    // ADS 瞄准时间（红点瞄具等影响）
+    adsTime: (spec.adsTime ?? 0.25) * (modifiers.adsTimeMult ?? 1),
+    // 切枪时间（战术握把等影响）
+    switchTime: (spec.switchTime ?? 0.35) * (modifiers.switchTimeMult ?? 1),
+  };
+}
+
 /**
  * 单把枪的运行时状态。武器数据本身不可变，状态放这里。
  */
@@ -171,73 +196,165 @@ export class WeaponInstance {
 }
 
 /**
- * 玩家的两个武器槽：
- *  槽1 = M19 / M19C 手枪（永久、无限备弹、保底防卡关）
- *  槽2 = 开局所选或拾取的主武器（MP7 / AR / 霰弹 / DMR）
+ * 玩家的固定三槽武器结构：
+ *  槽0 = M19 / M19C 手枪（永久、无限备弹、保底防卡关）
+ *  槽1 = 主武器 1
+ *  槽2 = 主武器 2（由护甲的 weaponSlots 解锁）
  */
 export class Loadout {
-  constructor({ pistolId = 'pistol', primaryId = null } = {}) {
+  constructor({ pistolId = 'pistol', primaryId = null, maxPrimarySlots = 1 } = {}) {
     const pistol = WEAPONS[pistolId] ?? WEAPONS.pistol;
-    this.slots = [new WeaponInstance(pistol), null];
+    this.slots = [new WeaponInstance(pistol), null, null];
+    // 当前设计至少保留一个主武器槽；未来若支持 0 槽护甲，切换守卫仍集中在这里。
+    this.maxPrimarySlots = Math.min(2, Math.max(1, Math.floor(Number(maxPrimarySlots) || 1)));
     this.active = 0;
     this.switchUntil = 0;
     if (primaryId) this.setPrimary(primaryId, 0);
   }
 
+  /** 更新护甲授予的主武器槽数量；缩容时清除不可用的槽2。 */
+  setMaxPrimarySlots(value = 1) {
+    this.maxPrimarySlots = Math.min(2, Math.max(1, Math.floor(Number(value) || 1)));
+    if (this.maxPrimarySlots < 2) this.slots[2] = null;
+    if (this.active > this.maxPrimarySlots || !this.slots[this.active]) {
+      this.active = 0;
+      this.switchUntil = 0;
+    }
+    return this.maxPrimarySlots;
+  }
+
+  /** 清空任务中的主武器；保底手枪槽0始终保留。 */
+  clearPrimaries() {
+    this.slots[1] = null;
+    this.slots[2] = null;
+    this.active = 0;
+    this.switchUntil = 0;
+  }
+
   get current() { return this.slots[this.active]; }
   get switching() { return performance.now() / 1000 < this.switchUntil; }
 
-  setPistol(pistolId) {
-    const pistol = WEAPONS[pistolId] ?? WEAPONS.pistol;
+  setPistol(pistolId, modifiers = null) {
+    const base = WEAPONS[pistolId] ?? WEAPONS.pistol;
+    const pistol = modifiers ? applyWeaponModifiers(base, modifiers) : base;
     this.slots[0] = new WeaponInstance(pistol);
     if (this.active === 0) this.switchUntil = 0;
   }
 
   /**
-   * 开局或热切换槽 2。传 null 卸下主武器并回到手枪。
+   * 设置主武器。targetSlot 为空时按槽1 → 槽2 自动选择。
+   * 传 null 卸下指定槽位（未指定时卸下当前主武器）并回到手枪。
    * now=0 时不锁切枪，保证「开始任务」第一帧就能开火。
    */
-  setPrimary(weaponId, now = 0) {
+  setPrimary(weaponId, now = 0, targetSlot = null) {
     if (!weaponId) {
-      this.slots[1] = null;
-      this.active = 0;
-      this.switchUntil = 0;
+      const idx = targetSlot ?? (this.active > 0 ? this.active : 1);
+      if (idx >= 1 && idx <= 2) {
+        this.slots[idx] = null;
+        this.active = 0;
+        this.switchUntil = 0;
+      }
       return null;
     }
     const spec = WEAPONS[weaponId];
-    if (!spec || spec.slot === 1) {
-      this.slots[1] = null;
-      this.active = 0;
-      this.switchUntil = 0;
-      return null;
+    if (!spec || spec.slot === 1) return null;
+
+    let slot = targetSlot;
+    if (slot === null) {
+      if (!this.slots[1]) slot = 1;
+      else if (this.maxPrimarySlots >= 2 && !this.slots[2]) slot = 2;
+      else return null;
     }
-    const old = this.slots[1];
-    this.slots[1] = new WeaponInstance(spec);
-    this.active = 1;
-    this.switchUntil = now > 0 ? now + 0.35 : 0;
+    if (slot < 1 || slot > 2 || (slot === 2 && this.maxPrimarySlots < 2)) return null;
+
+    const old = this.slots[slot];
+    this.slots[slot] = new WeaponInstance(spec);
+    this.active = slot;
+    const switchTime = spec.switchTime ?? 0.35;
+    this.switchUntil = now > 0 ? now + switchTime : 0;
     return old;
   }
 
   switchTo(idx, now) {
-    if (idx === this.active || !this.slots[idx]) return false;
+    if (idx < 0 || idx >= this.slots.length || idx === this.active || !this.slots[idx]) return false;
+    if (idx > 0 && idx > this.maxPrimarySlots) return false;
+    if (idx === 2 && this.maxPrimarySlots < 2) return false;
     this.active = idx;
-    this.switchUntil = now + 0.35;      // 切换耗时 0.35s
+    const weapon = this.slots[idx];
+    const switchTime = weapon?.spec?.switchTime ?? 0.35;
+    this.switchUntil = now + switchTime;
     return true;
   }
 
   toggle(now) {
-    return this.switchTo(this.active === 0 ? 1 : 0, now);
+    let next = (this.active + 1) % this.slots.length;
+    for (let tries = 0; tries < this.slots.length; tries++) {
+      if (next > 0 && next > this.maxPrimarySlots) {
+        next = (next + 1) % this.slots.length;
+        continue;
+      }
+      if (this.slots[next]) return this.switchTo(next, now);
+      next = (next + 1) % this.slots.length;
+    }
+    return false;
   }
 
   /**
    * 拾取主武器。旧主武器被返回，交给上层丢在脚下。
+   * 兼容旧调用方；新拾取流程使用 pickUpAuto / pickUpToSlot。
    */
   pickUp(spec, ammo, reserve, now) {
     const old = this.slots[1];
     this.slots[1] = new WeaponInstance(spec, { ammo, reserve });
     this.active = 1;
-    this.switchUntil = now + 0.35;
+    const switchTime = spec.switchTime ?? 0.35;
+    this.switchUntil = now + switchTime;
     return old;
+  }
+
+  /** 自动拾取：放入第一个空主武器槽；满槽时交给上层显示选择 UI。 */
+  pickUpAuto(weaponPayload, now) {
+    const { weapon, ammo, reserve } = weaponPayload ?? {};
+    const spec = WEAPONS[weapon];
+    if (!spec || spec.slot === 1) return { ok: false };
+
+    const targetSlot = !this.slots[1]
+      ? 1
+      : (this.maxPrimarySlots >= 2 && !this.slots[2] ? 2 : null);
+    if (targetSlot === null) return { ok: false, needChoice: true };
+
+    const old = this.slots[targetSlot];
+    this.slots[targetSlot] = new WeaponInstance(spec, {
+      ammo: ammo ?? spec.mag,
+      reserve: reserve ?? spec.reserve,
+    });
+    this.active = targetSlot;
+    this.switchUntil = now + (spec.switchTime ?? 0.35);
+    return {
+      ok: true,
+      dropped: old ? { spec: old.spec, ammo: old.ammo, reserve: old.reserve } : null,
+    };
+  }
+
+  /** 强制替换指定主武器槽，供玩家在两槽已满时确认使用。 */
+  pickUpToSlot(weaponPayload, now, targetSlot) {
+    const { weapon, ammo, reserve } = weaponPayload ?? {};
+    const spec = WEAPONS[weapon];
+    if (!spec || spec.slot === 1) return { ok: false };
+    if (targetSlot < 1 || targetSlot > 2) return { ok: false };
+    if (targetSlot === 2 && this.maxPrimarySlots < 2) return { ok: false };
+
+    const old = this.slots[targetSlot];
+    this.slots[targetSlot] = new WeaponInstance(spec, {
+      ammo: ammo ?? spec.mag,
+      reserve: reserve ?? spec.reserve,
+    });
+    this.active = targetSlot;
+    this.switchUntil = now + (spec.switchTime ?? 0.35);
+    return {
+      ok: true,
+      dropped: old ? { spec: old.spec, ammo: old.ammo, reserve: old.reserve } : null,
+    };
   }
 
   /**

@@ -57,7 +57,8 @@ export const ENEMY_SPAWNS03 = [
 
   // ── 食堂（西脊南）── tier 1
   // 两张餐桌之间的伏击位，蹲在门内侧看不到的桌背。
-  { x: 15.5, y: Y1, z: 29.5, yaw: 0, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun', tier: 1 },
+  { x: 15.5, y: Y1, z: 29.5, yaw: 0, archetype: ARCHETYPE.AMBUSHER, weapon: 'shotgun', tier: 1, wander: true, canCrossRooms: true,
+    wanderRooms: ['canteen', 'dorm', 'atrium', 'generator'] },
 
   // ── 中庭（十字交叉，最容易撞见玩家的区域）── tier 1
   // 大环走中庭西半，避开四道错位墙垛。
