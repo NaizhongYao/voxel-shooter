@@ -59,7 +59,9 @@
     transition:border-color .1s, box-shadow .1s, opacity .1s, color .1s; }
   .qw-slot.empty{ border-style:dashed; }
   .qw-slot.selected{ border-color:var(--amber); color:var(--amber); opacity:1;
-    box-shadow:0 0 0 1px rgba(245,166,35,.45), 0 0 18px rgba(245,166,35,.25); }
+    box-shadow:0 0 0 2px rgba(245,166,35,.68), 0 0 24px rgba(245,166,35,.4), 0 0 36px rgba(245,166,35,.18);
+    transform:translate(-50%,-50%) rotate(calc(var(--i) * 72deg))
+      translateY(calc(var(--qw-r) * -1)) rotate(calc(var(--i) * -72deg)) scale(1.08); }
   .qw-key{ position:absolute; top:2px; right:4px; font-size:calc(var(--qw-size) * 0.03);
     color:var(--cyan); letter-spacing:0; }
   .qw-icon{ width:82%; height:calc(var(--qw-size) * 0.068); display:flex;
@@ -70,7 +72,15 @@
     text-overflow:ellipsis; line-height:1.2; }
   .qw-qty{ font-size:calc(var(--qw-size) * 0.03); color:var(--amber); }
   .qw-center{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
-    text-align:center; width:calc(var(--qw-size) * 0.44); }
+    text-align:center; width:calc(var(--qw-size) * 0.44);
+    transition:opacity .08s; }
+  .qw-center::before{ content:''; position:absolute; left:50%; top:50%;
+    transform:translate(-50%,-50%); width:calc(var(--qw-size) * 0.24);
+    height:calc(var(--qw-size) * 0.24); border-radius:50%;
+    border:1px dashed rgba(245,166,35,.25); opacity:0;
+    transition:opacity .08s, border-color .08s; }
+  #quick-wheel.open .qw-center::before{ opacity:1; }
+  .qw-center:hover::before{ border-color:rgba(245,166,35,.58); opacity:1; }
   .qw-cancel{ font-size:calc(var(--qw-size) * 0.046); letter-spacing:.3em;
     color:var(--muted); }
   #quick-wheel.open .qw-cancel{ color:var(--amber); }
@@ -178,6 +188,31 @@
   .mm-exit-t{ fill:var(--amber); font-size:2.4px; text-anchor:middle;
     font-family:var(--mono); font-weight:700; }
   .mm-player > path{ fill:var(--amber); stroke:#1a1206; stroke-width:.35; }
+  /**
+   * 全屏战术地图（M）：与小地图同一份房间数据、同一套 .mm-* 样式，只是放大。
+   * 仍然不画敌人和家具；额外标出已开 / 未开的战利品箱位置（玩家亲眼见过的箱子）
+   * 和到撤离点的直线距离。世界不暂停，地图打开时仍可移动。
+   */
+  #fullscreen-map{ position:absolute; inset:0; z-index:17; display:none;
+    align-items:center; justify-content:center; flex-direction:column; gap:10px;
+    background:rgba(8,10,14,.80); pointer-events:none; }
+  #fullscreen-map.open{ display:flex; }
+  .fullscreen-map-head{ width:min(80vh, 86vw); display:flex; justify-content:space-between;
+    align-items:baseline; font-size:.72rem; letter-spacing:.2em; color:var(--muted); }
+  .fullscreen-map-head b{ color:var(--amber); font-weight:600; letter-spacing:.12em; }
+  #fullscreen-map-content{ width:min(80vh, 86vw); aspect-ratio:1/1;
+    background:rgba(10,13,18,.92); border:1px solid var(--rule); padding:14px; }
+  #fullscreen-map-content .mm-label{ font-size:1.6px; }
+  #fullscreen-map-content .mm-exit-t{ font-size:1.8px; }
+  .fm-loot{ fill:none; stroke:var(--cyan); stroke-width:.35; }
+  .fm-loot.opened{ stroke:rgba(139,147,163,.6); stroke-dasharray:.5 .4; }
+  .fm-loot.high{ stroke:var(--amber); }
+  .fm-route{ stroke:rgba(63,185,111,.55); stroke-width:.3; stroke-dasharray:1 .8; fill:none; }
+  .fullscreen-map-legend{ width:min(80vh, 86vw); display:flex; gap:16px; flex-wrap:wrap;
+    font-size:.62rem; color:var(--muted); letter-spacing:.08em; }
+  .fullscreen-map-legend i{ display:inline-block; width:10px; height:10px; margin-right:5px;
+    vertical-align:-1px; border:1px solid currentColor; }
+  .fullscreen-map-hint{ font-size:.62rem; color:var(--muted); letter-spacing:.14em; }
   #mm-foot{ margin-top:5px; font-size:.52rem; letter-spacing:.14em;
     color:var(--muted); text-align:right; }
 
@@ -201,10 +236,14 @@
   #keys b{ color:var(--ink); font-weight:600; }
 
   /* 拾取提示 */
-  #prompt{ display:none; position:absolute; left:50%; top:58%; transform:translateX(-50%);
+  #prompt{ display:none; position:absolute; left:50%; bottom:18%; transform:translateX(-50%);
     background:var(--panel); border:1px solid var(--amber); padding:7px 16px;
     font-size:.74rem; letter-spacing:.1em; }
   #prompt b{ color:var(--amber); }
+  #hold-progress{ display:none; position:absolute; left:50%; bottom:calc(18% - 48px); transform:translateX(-50%);
+    width:180px; height:5px; background:rgba(0,0,0,.6); border:1px solid rgba(255,255,255,.12); }
+  #hold-progress-bar{ height:100%; width:0%; background:var(--amber); }
+  #hold-progress.extract #hold-progress-bar{ background:var(--good); }
 
   #weapon-swap-choice{ position:absolute; inset:0; z-index:20; display:none; align-items:center;
     justify-content:center; pointer-events:auto; background:rgba(8,10,14,.78); }
@@ -246,18 +285,54 @@
   .raid-cells-quick{ grid-template-columns:repeat(5, minmax(0, 1fr)); }
   .raid-cell-tag{ grid-column:span 2; font-size:.54rem; color:var(--muted);
     letter-spacing:.12em; margin-top:2px; }
-  .raid-cell{ min-width:0; display:flex; flex-direction:column; align-items:center;
-    gap:2px; padding:6px 4px; border:1px solid rgba(139,147,163,.5);
-    background:rgba(0,0,0,.25); cursor:pointer; }
-  .raid-cell.empty{ border-style:dashed; cursor:default; opacity:.6; }
-  .raid-cell.selected{ border-color:var(--amber); opacity:1;
+  .raid-cell{ position:relative; min-width:0; min-height:62px; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:2px; padding:6px 4px 5px;
+    border:1px solid rgba(139,147,163,.38); border-bottom:3px solid var(--tier, rgba(139,147,163,.38));
+    background:linear-gradient(180deg, rgba(255,255,255,.035), rgba(0,0,0,.28));
+    cursor:pointer; touch-action:none; user-select:none;
+    transition:border-color .08s, background .08s, transform .08s; }
+  .raid-cell:not(.empty):hover{ border-color:var(--tier, var(--amber)); background:rgba(245,166,35,.07); }
+  .raid-cell:not(.empty):active{ transform:translateY(1px); }
+  .raid-cell.empty{ border-style:dashed; border-bottom-width:1px; cursor:default; opacity:.45; background:none; }
+  .raid-cell.selected{ border-color:var(--amber); opacity:1; background:rgba(245,166,35,.1);
     box-shadow:0 0 0 1px rgba(245,166,35,.45), 0 0 14px rgba(245,166,35,.22); }
-  .raid-cell-placeholder{ grid-column:1 / -1; }
+  .raid-cell[data-tier="low"]{ --tier:#8b93a3; }
+  .raid-cell[data-tier="med"]{ --tier:var(--cyan); }
+  .raid-cell[data-tier="high"]{ --tier:var(--amber); }
+  .raid-cell[data-kind="blueprint"]{ --tier:#a78bfa; }
+  .raid-cell[data-kind="weapon"]{ --tier:var(--threat); }
+  .raid-cell-icon{ width:26px; height:18px; color:var(--tier, var(--muted)); opacity:.9; }
+  .raid-cell-icon svg{ width:100%; height:100%; display:block; }
+  .raid-cell-qty{ position:absolute; top:3px; right:5px; font-size:.6rem; color:var(--amber); }
+  .raid-cell-placeholder{ grid-column:1 / -1; min-height:80px; display:flex;
+    flex-direction:column; align-items:center; justify-content:center; gap:8px;
+    color:var(--muted); font-size:.68rem; letter-spacing:.1em; opacity:.75; }
+  .raid-cell-placeholder::before{ content:'⊡'; font-size:2rem; opacity:.4; }
   .raid-cell-name{ max-width:100%; font-size:.62rem; color:var(--ink);
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.2; }
-  .raid-cell-qty{ font-size:.66rem; color:var(--amber); }
   .raid-cell-sub{ font-size:.54rem; color:var(--muted);
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+  /* 拖拽：来源格变淡，目标格按可放/不可放着色，影子跟随指针 */
+  .raid-cell.dragging{ opacity:.35; }
+  .raid-cell.drop-ok{ border-color:var(--good); background:rgba(63,185,111,.14); opacity:1;
+    box-shadow:0 0 0 1px rgba(63,185,111,.5); }
+  .raid-cell.drop-bad{ border-color:var(--threat); background:rgba(229,72,77,.1); opacity:1; }
+  .raid-drag-ghost{ position:fixed; z-index:40; pointer-events:none; width:72px; min-height:58px;
+    transform:translate(-50%,-50%); display:flex; flex-direction:column; align-items:center;
+    justify-content:center; gap:2px; padding:5px 4px; border:1px solid var(--amber);
+    background:rgba(16,22,30,.94); box-shadow:0 10px 26px rgba(0,0,0,.55);
+    font-family:var(--mono); color:var(--ink); }
+  .raid-drag-ghost .raid-cell-icon{ color:var(--amber); }
+  .raid-drag-ghost .raid-cell-name{ font-size:.6rem; max-width:64px; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis; }
+  .raid-drag-ghost .raid-cell-qty{ position:absolute; top:3px; right:5px; font-size:.58rem; color:var(--amber); }
+  .raid-drag-ghost .raid-cell-sub{ display:none; }
+  .raid-ghost-split{ font-size:.56rem; color:var(--cyan); letter-spacing:.06em; }
+  /* 拆分控件：滑块 + 当前数量 + 确认 */
+  .raid-split-control{ display:flex; align-items:center; gap:8px; }
+  .raid-split-control label{ color:var(--muted); white-space:nowrap; }
+  .raid-split-control label span{ color:var(--amber); }
+  .raid-split-control input[type=range]{ width:110px; accent-color:var(--amber); cursor:pointer; }
   .raid-detail{ width:var(--raid-panel); margin-top:10px; padding:10px 12px;
     border:1px solid var(--cyan); background:rgba(10,13,18,.92); min-width:0;
     display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; font-size:.72rem; }
@@ -1015,7 +1090,7 @@
   <div id="minimap">
     <div id="mm-head"><span>MAP</span><span id="mm-here">—</span></div>
     <div id="mm-box"></div>
-    <div id="mm-foot">TAB 隐藏</div>
+    <div id="mm-foot">H 隐藏 · M 大地图</div>
   </div>
 
   <div id="stats">
@@ -1101,7 +1176,23 @@
   <div id="raid-inventory" role="dialog" aria-label="局内背包" aria-modal="true" aria-hidden="true" tabindex="-1"></div>
 
   <div id="prompt"></div>
+  <div id="hold-progress"><div id="hold-progress-bar"></div></div>
   <div id="toast"></div>
+
+  <!-- 全屏地图覆盖层：按 M 打开，显示当前关卡平面图 + 玩家位置 + 撤离点 -->
+  <div id="fullscreen-map" role="dialog" aria-label="战术地图" aria-hidden="true">
+    <div class="fullscreen-map-head"><span>战术地图 · <b id="fm-level">—</b></span><span>当前位置 <b id="fm-here">—</b></span></div>
+    <div id="fullscreen-map-content"></div>
+    <div class="fullscreen-map-legend">
+      <span style="color:var(--amber)"><i style="background:var(--amber)"></i>你</span>
+      <span style="color:var(--amber)"><i style="border-radius:50%"></i>撤离点</span>
+      <span style="color:var(--good)"><i style="background:var(--good)"></i>门</span>
+      <span style="color:var(--cyan)"><i></i>见过的物资箱</span>
+      <span style="color:var(--muted)"><i style="border-style:dashed"></i>已搜过</span>
+      <span>暗色房间 = 未探索</span>
+    </div>
+    <div class="fullscreen-map-hint">M / Esc 关闭 · 世界不暂停</div>
+  </div>
 
   <div id="keys">
     <span><b>WASD</b> 移动</span>

@@ -115,7 +115,8 @@ export const LIGHT = {
     penumbra: 0.32,             // 边缘再柔一点，避免硬边圆斑
     decay: 1.0,                 // 1.0 = 标准平方反比
     detectSpotRadius: 12,       // 「光斑」被敌人察觉的半径
-    onDetectMul: 1.8,           // 开灯：敌人探测距离 ×1.8
+    onDetectMul: 1.8,           // 开灯且敌人在光锥内（正对光源）：×1.8
+    offBeamDetectMul: 1.0,      // 开灯但光锥背对敌人：只有散射光暴露 ×1.0
     offDetectMul: 0.45,         // 关灯：×0.45
     nearGlow: 5,                // 关灯时身边可见范围
     nearGlowIntensity: 14,
@@ -213,7 +214,20 @@ export const CAMERA = {
   pullbackPad: 0.3,             // 相机射线回拉留边
   probeRadius: 0.22,            // 回拉采样的四角撒开半径（相机近平面的近似体积）
   mouseSensitivity: 0.0022,
-  crouchEyeDrop: 0.55,
+};
+
+/**
+ * 撤离与首次开箱的「确认时长」（项目计划 §05 / §07）。
+ *   · 撤离不再「踩进圈即结算」：站在撤离区按住 E，受击或离开区域会打断；
+ *   · 首次开箱要短暂撬锁并发出噪音 —— 开箱本身就是一次暴露决策。
+ */
+export const EXTRACTION = {
+  radius: 1.6,          // 撤离区半径（vox），与绿色地块 1.6×1.6 对齐
+  holdSec: 1.8,         // 按住 E 多久完成撤离
+};
+export const LOOT_SEARCH = {
+  holdSec: 0.9,         // 首次开箱撬锁时长；已开过的箱子再看不需要等待
+  noise: 7,             // 撬锁噪音半径（低于手枪 26、高于慢走 1.2）
 };
 
 export const PLAYER = {

@@ -82,6 +82,32 @@ function makeBarTexture() {
   return tex;
 }
 
+/**
+ * 朝向提示的贴图：一个向上的三角形（像箭头），实际朝向由精灵的旋转决定。
+ * 
+ * 用途：简单难度下显示敌人的视野方向，让玩家学到「从背后接近更安全」。
+ * 困难/专家档不显示（showFacingHint: false），迫使玩家通过手电和巡逻路线推断。
+ */
+function makeFacingTexture() {
+  const S = 64;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, S, S);
+  // 画一个向上的等腰三角形，底边在下，尖端向上
+  g.fillStyle = 'rgba(255,255,255,0.7)';
+  g.beginPath();
+  g.moveTo(S / 2, 8);              // 尖端
+  g.lineTo(S * 0.75, S - 8);       // 右下角
+  g.lineTo(S * 0.25, S - 8);       // 左下角
+  g.closePath();
+  g.fill();
+  const tex = new THREE.CanvasTexture(c);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  return tex;
+}
+
 export class EnemyIndicators {
   /**
    * @param scene   three.js 场景
@@ -91,6 +117,7 @@ export class EnemyIndicators {
     this.enemies = enemies;
     this.markerTex = makeMarkerTexture();
     this.barTex = makeBarTexture();
+    this.facingTex = makeFacingTexture();
     this.items = [];
 
     for (const e of enemies) {
@@ -125,9 +152,21 @@ export class EnemyIndicators {
       barFill.scale.set(0.5, 0.06, 1);
       group.add(barFill);
 
+      // 朝向箭头：只在 showFacingHint: true 时显示（简单难度），
+      // 让新手能看出敌人往哪看，学到「从背后接近」这条基本策略。
+      const facingArrow = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: this.facingTex, color: 0x6b7480,
+        transparent: true, depthTest: true, depthWrite: false,
+        sizeAttenuation: false, fog: false,
+      }));
+      facingArrow.scale.set(0.15, 0.15, 1);
+      facingArrow.position.y = 0.35;
+      facingArrow.visible = false;
+      group.add(facingArrow);
+
       group.visible = false;
       scene.add(group);
-      this.items.push({ enemy: e, group, marker, barBg, barFill, phase: Math.random() * 6 });
+      this.items.push({ enemy: e, group, marker, barBg, barFill, facingArrow, phase: Math.random() * 6 });
     }
   }
 
@@ -137,7 +176,7 @@ export class EnemyIndicators {
    * @param forceReveal 收尾阶段：只剩最后几个敌人时无视距离与平静隐藏，
    *                     全部亮标 —— 否则黑楼里找不到最后一个人，游戏永远无法结束。
    */
-  update(viewPos, now, dt, forceReveal = false) {
+  update(viewPos, now, dt, forceReveal = false, viewYaw = 0) {
     const d = D();
     for (const it of this.items) {
       const e = it.enemy;
@@ -188,6 +227,16 @@ export class EnemyIndicators {
         // center.x=0 时，position.x 是左边缘 → 与底色左对齐
         it.barFill.position.set(-w / 2, -scale * 0.85, 0);
         it.barFill.material.color.setHex(T.color);
+      }
+
+      // 朝向箭头：showFacingHint 打开时显示。Sprite 永远正对相机，所以屏幕上的
+      // 方向 = 敌人 yaw 相对相机 yaw 的差：同向时箭头朝上（背对玩家、看向远处），
+      // 正对玩家时箭头朝下。两个 yaw 同一约定（0 = 朝 -Z，逆时针为正）。
+      it.facingArrow.visible = !!d.showFacingHint;
+      if (d.showFacingHint) {
+        it.facingArrow.material.rotation = e.yaw - viewYaw;
+        it.facingArrow.material.color.setHex(T.color);
+        it.facingArrow.material.opacity = alpha * 0.85;
       }
     }
   }

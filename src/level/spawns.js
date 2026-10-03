@@ -58,7 +58,7 @@ const Y1 = 1;
  * 有 96–115 秒是完全静止的。肉眼看坐标表看不出来，因为掩体是后铺的。
  *
  * 现在这些环路是穷举房间内所有轴对齐矩形、逐段做碰撞采样之后挑出来的
- * 「面积最大且四条边全通」的解，由 test/spawns.test.mjs 持续守着。
+ * 「面积最大且四条边全通」的解，由 tools/find-patrol-loops.mjs 求解、tools/check-level01-spawns.mjs 校验。
  * 改动任何一个坐标都要重跑那个测试。
  *
  * 另外 Enemy.walkPatrol 里还有一层兜底：连续 2.5 秒没有实质位移就

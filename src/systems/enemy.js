@@ -321,9 +321,6 @@ export class Enemy {
     /** 查房无目标时的张望摆动，同一套机制，振幅/周期更急促 */
     this.investScanCenter = this.yaw;
     this.investScanPhase = this.random() * Math.PI * 2;
-    // 搜索状态：失去目标后去哪些点找人
-    this.searchPoints = null;
-    this.searchIdx = 0;
     /** 巡逻卡死计时（秒）。超过 patrolStallLimit 就跳过当前路径点。 */
     this.patrolStall = 0;
     /** 噪音来源点（听到枪声的位置），查房时用来判断是否继续往里推 */
@@ -890,7 +887,7 @@ export class Enemy {
     /**
      * ── 玩家有多显眼 ──
      *
-     * 手电开着       ×1.8（自己的锥光，方向感很强）
+     * 手电开着       ×1.8（敌人在光锥内）/ ×1.0（光锥背对敌人，只剩散射光）
      * 站在应急灯下   ×2.0（持续、全向，比手电更糟）
      * 两者都没有     手电的 ×0.45 再 ×shadowMul（藏在暗处）
      *
@@ -899,6 +896,11 @@ export class Enemy {
      */
     const lampLit = this.lights ? this.lights.litAt(px, player.pos.y, pz) : false;
     let lightMul = lampLit ? LIGHT.emergencyLamp.litDetectMul : flashlight.detectionMultiplier;
+    // 光锥朝别处时（侧身、照另一侧）只剩散射光：玩家可以用「灯往哪照」管理暴露
+    if (!lampLit && flashlight.on && typeof flashlight.illuminates === "function"
+      && !flashlight.illuminates(this.pos.x, this.eyeY, this.pos.z)) {
+      lightMul = LIGHT.flashlight.offBeamDetectMul ?? lightMul;
+    }
     // chameleon：只打折「灯下 / 开灯」的暴露倍率，暗处仍走原 offDetectMul × shadowMul
     if (lampLit || flashlight.on) {
       lightMul *= (player.loadoutModifiers?.litExposureMul ?? 1);

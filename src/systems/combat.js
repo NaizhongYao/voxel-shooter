@@ -305,7 +305,7 @@ function applySpread(dir, degrees, concentrate = 1) {
   dir.normalize();
 }
 
-/** 玩家命中盒（头 ×2.5 / 躯干 ×1.0 / 四肢 ×0.7）*/
+/** 玩家命中盒（倍率见 PLAYER.hitbox：头 ×3.0 / 躯干 ×1.0 / 四肢 ×0.7）*/
 function playerHitTest(player, origin, dir, maxDist) {
   const h = player.body.height;
   const scale = h / PLAYER.height;

@@ -20,6 +20,7 @@ import {
   canAccept,
   createInventory,
   effectiveArmorId,
+  grenadeStackMax,
 } from './inventory.js';
 
 export const QUICK_USE_SLOT_COUNT = 5;
@@ -754,6 +755,215 @@ export function setQuickUseSelectedIndex(raidInventory, index) {
   }
   raidInventory.quickUseSelected = index;
   return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 按格精确放置（拖拽）与拆分堆叠
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 面板格地址 → 底层数组位置。面板上的背包是「手雷格在前、杂项格在后」的
+ * 连续编号（与 ui/raid-inventory.js 的 backpackSlots 同序），这里负责换算。
+ * @param {{container:'backpack'|'quickUse'|'container', index:number}} ref
+ */
+export function resolveSlot(raidInventory, ref) {
+  if (!raidInventory || !ref || !Number.isInteger(ref.index) || ref.index < 0) return null;
+  if (ref.container === 'quickUse') {
+    if (ref.index >= QUICK_USE_SLOT_COUNT) return null;
+    return { container: 'quickUse', group: 'quickUse', array: raidInventory.quickUse, index: ref.index };
+  }
+  if (ref.container === 'backpack') {
+    const grenade = raidInventory.backpack.grenade ?? [];
+    const misc = raidInventory.backpack.misc ?? [];
+    if (ref.index < grenade.length) {
+      return { container: 'backpack', group: 'grenade', array: grenade, index: ref.index };
+    }
+    const i = ref.index - grenade.length;
+    if (i >= misc.length) return null;
+    return { container: 'backpack', group: 'misc', array: misc, index: i };
+  }
+  if (ref.container === 'container') {
+    const session = raidInventory.openContainer;
+    if (!session?.items || ref.index >= session.capacity) return null;
+    return { container: 'container', group: 'container', array: session.items, index: ref.index, dense: true };
+  }
+  return null;
+}
+
+function slotItem(loc) {
+  return loc ? (loc.array[loc.index] ?? null) : null;
+}
+
+/** 目标格是否收这类物品（不看占用）。容器什么都收；装备位不在这里处理。 */
+function slotAccepts(loc, item) {
+  const kind = itemKind(item);
+  if (loc.group === 'quickUse') return QUICK_USE_KINDS.has(kind)
+    ? { ok: true } : { ok: false, reason: '快捷栏只放投掷物或消耗品' };
+  if (loc.group === 'grenade' || loc.group === 'misc') return canAccept(loc.group, item);
+  if (loc.group === 'container') return { ok: true };
+  return { ok: false, reason: '该位置不接受物品' };
+}
+
+/** 单格堆叠上限：背包手雷格按护甲现算（与 autoPlace 一致），其余用实例 stackMax。 */
+function cellStackMax(raidInventory, loc, item) {
+  if (loc.group === 'grenade' && itemKind(item) === 'grenade') {
+    const armorId = effectiveArmorId(asLegacyInventory(raidInventory));
+    // 已有堆叠可能来自开局种子（stackMax = 带入数量），不能被判成超限
+    return Math.max(1, grenadeStackMax(item.defId, armorId), item?.stackMax ?? 1);
+  }
+  return Math.max(1, item?.stackMax ?? 1);
+}
+
+/** 写入一格。容器会话是紧凑数组（无洞），落位超出末尾就追加。 */
+function writeSlot(loc, item) {
+  if (loc.dense) {
+    if (item === null) loc.array.splice(loc.index, 1);
+    else if (loc.index >= loc.array.length) loc.array.push(item);
+    else loc.array[loc.index] = item;
+  } else {
+    loc.array[loc.index] = item;
+  }
+}
+
+/**
+ * 把一格物品（或其中 quantity 件）放到指定格。全程原子：快照 → 改写 →
+ * 任一检查失败就完整回滚。规则（与 ARC 式背包一致）：
+ *   · 目标空格：整格（或拆出的那部分）移入；
+ *   · 目标同 defId 可堆叠：合并到上限，装不下的部分留在来源格；
+ *   · 目标是别的物品：两格互换（两边都必须接受对方的物品类型）；拆分时不互换。
+ * 装备位只读，不参与拖拽。quickUse → container 维持既有拒绝（快捷栏不回放容器）。
+ *
+ * @param {{container, index}} fromRef
+ * @param {{container, index}} toRef
+ * @param {object} [options] { quantity }：只搬一部分（拆分），默认整格
+ */
+export function moveToSlot(raidInventory, fromRef, toRef, options = {}) {
+  if (!raidInventory) return { ok: false, reason: '缺少战局容器' };
+  const from = resolveSlot(raidInventory, fromRef);
+  const to = resolveSlot(raidInventory, toRef);
+  if (!from || !to) return { ok: false, reason: '格子位置无效' };
+  const moving = slotItem(from);
+  if (!moving) return { ok: false, reason: '来源格没有物品' };
+  if (from.array === to.array && from.index === to.index) {
+    return { ok: true, moved: false, item: moving };
+  }
+  if (from.container === 'quickUse' && to.container === 'container') {
+    return { ok: false, reason: '快捷栏物品不能放回容器' };
+  }
+
+  const have = Math.max(1, Math.floor(moving.quantity ?? 1));
+  const want = options.quantity === undefined
+    ? have
+    : Math.floor(Number(options.quantity));
+  if (!Number.isFinite(want) || want < 1 || want > have) {
+    return { ok: false, reason: '拆分数量无效' };
+  }
+  const splitting = want < have;
+
+  const accepted = slotAccepts(to, moving);
+  if (!accepted.ok) return accepted;
+
+  const snapshot = snapshotRaidInventory(raidInventory);
+  const fail = (reason) => {
+    restoreRaidInventory(raidInventory, snapshot);
+    return { ok: false, reason };
+  };
+
+  // 容器格是紧凑数组：先算好来源/目标在删除来源后的真实下标。
+  const target = slotItem(to);
+
+  // ① 目标空格
+  if (!target) {
+    if (to.container === 'container') {
+      const session = raidInventory.openContainer;
+      const occupied = session.items.filter(Boolean).length;
+      if (from.container !== 'container' && occupied >= session.capacity) {
+        return { ok: false, reason: `容器已满 · ${session.capacity} 格全部占用` };
+      }
+    }
+    const max = cellStackMax(raidInventory, to, moving);
+    if (want > max) return { ok: false, reason: `该格最多放 ${max} 件` };
+    let placed;
+    if (splitting) {
+      moving.quantity = have - want;
+      placed = { ...clone(moving), quantity: want, instanceId: nextFragmentId() };
+    } else {
+      placed = moving;
+      if (from.dense) {
+        // 紧凑来源：先删除，目标若在同一数组且位于其后，下标前移一位
+        from.array.splice(from.index, 1);
+        if (to.array === from.array && to.index > from.index) to.index -= 1;
+      } else {
+        from.array[from.index] = null;
+      }
+    }
+    writeSlot(to, placed);
+    return { ok: true, moved: true, split: splitting, item: placed, quantity: want, from: fromRef, to: toRef };
+  }
+
+  // ② 同种可堆叠：合并
+  const sameStack = itemKind(target) === itemKind(moving) && target.defId === moving.defId;
+  const max = cellStackMax(raidInventory, to, target);
+  if (sameStack && max > 1) {
+    const room = max - Math.max(1, Math.floor(target.quantity ?? 1));
+    if (room <= 0) return { ok: false, reason: '目标堆叠已满' };
+    const take = Math.min(room, want);
+    target.quantity = (target.quantity ?? 1) + take;
+    target.stackMax = Math.max(target.stackMax ?? 1, max);
+    const left = have - take;
+    if (left > 0) moving.quantity = left;
+    else if (from.dense) from.array.splice(from.index, 1);
+    else from.array[from.index] = null;
+    return { ok: true, moved: true, merged: true, item: target, quantity: take, left, from: fromRef, to: toRef };
+  }
+
+  // ③ 互换：拆分时不互换（半堆和另一件物品对调没有意义）
+  if (splitting) return { ok: false, reason: '拆分只能放到空格或同种堆叠' };
+  const back = slotAccepts(from, target);
+  if (!back.ok) return { ok: false, reason: `无法互换：${back.reason}` };
+  if (from.container === 'container' && to.container === 'quickUse') {
+    // 互换会把快捷栏物品塞回容器，等同于被拒绝的 quickUse → container
+    return { ok: false, reason: '快捷栏物品不能放回容器' };
+  }
+  from.array[from.index] = target;
+  to.array[to.index] = moving;
+  if (cellStackMax(raidInventory, to, moving) < (moving.quantity ?? 1)
+    || cellStackMax(raidInventory, from, target) < (target.quantity ?? 1)) {
+    return fail('互换后超出格子堆叠上限');
+  }
+  return { ok: true, moved: true, swapped: true, item: moving, other: target, from: fromRef, to: toRef };
+}
+
+/**
+ * 原地拆分：从一格取出 quantity 件，放到同栏第一个空格（ARC 的 Split Stack）。
+ * 没有空格时整体失败，不改变任何数量。
+ */
+export function splitStack(raidInventory, ref, quantity) {
+  const from = resolveSlot(raidInventory, ref);
+  const item = slotItem(from);
+  if (!item) return { ok: false, reason: '该格没有物品' };
+  const have = Math.max(1, Math.floor(item.quantity ?? 1));
+  if (have < 2) return { ok: false, reason: '只有 1 件，无法拆分' };
+  const want = Math.floor(Number(quantity));
+  if (!Number.isFinite(want) || want < 1 || want >= have) {
+    return { ok: false, reason: `拆分数量需在 1 ~ ${have - 1} 之间` };
+  }
+  // 同栏找空格：背包按同组（手雷格/杂项格）找，容器在末尾追加
+  let targetIndex = -1;
+  if (from.dense) {
+    const session = raidInventory.openContainer;
+    if (session.items.filter(Boolean).length >= session.capacity) {
+      return { ok: false, reason: '容器没有空格可放拆出的物品' };
+    }
+    targetIndex = session.items.length;
+  } else {
+    const offset = from.container === 'backpack' && from.group === 'misc'
+      ? (raidInventory.backpack.grenade ?? []).length : 0;
+    const free = from.array.findIndex((slot) => !slot);
+    if (free >= 0) targetIndex = free + offset;
+  }
+  if (targetIndex < 0) return { ok: false, reason: '没有空格可放拆出的物品' };
+  return moveToSlot(raidInventory, ref, { container: ref.container, index: targetIndex }, { quantity: want });
 }
 
 /**

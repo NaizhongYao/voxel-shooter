@@ -28,13 +28,48 @@ import {
   QUICK_USE_SLOT_COUNT,
   attemptGrenadeThrow,
   clearQuickUseSlot,
+  setQuickUseSlot,
   getQuickUseSelectedIndex,
   setQuickUseSelectedIndex,
   transferItem,
+  moveToSlot,
+  splitStack,
+  resolveSlot,
 } from '../systems/raid-inventory.js';
 import { ARMOR_TYPES } from '../systems/loadout-config.js';
 
 export { QUICK_USE_SLOT_COUNT };
+
+const DRAG_THRESHOLD_PX = 5;
+const DRAGGABLE_CONTAINERS = new Set(['backpack', 'quickUse', 'container']);
+
+function resolveSlotItem(raid, ref) {
+  const loc = resolveSlot(raid, ref);
+  return loc?.array?.[loc.index] ?? null;
+}
+
+/** 预览拖拽目标是否合法（不改数据，只预测结果）。 */
+function previewMove(raid, from, to, splitting) {
+  if (!raid || !from || !to) return { ok: false };
+  const fromLoc = resolveSlot(raid, from);
+  const toLoc = resolveSlot(raid, to);
+  if (!fromLoc || !toLoc) return { ok: false };
+  if (fromLoc.array === toLoc.array && fromLoc.index === toLoc.index) return { ok: false };
+  const moving = fromLoc.array[fromLoc.index];
+  if (!moving) return { ok: false };
+  const target = toLoc.array[toLoc.index];
+  if (!target) return { ok: true };   // 空格总是可以放
+  const same = moving.defId === target.defId && moving.slotKind === target.slotKind;
+  if (same && (target.stackMax ?? 1) > 1) return { ok: true };  // 可堆叠
+  return { ok: !splitting };          // 互换只在整格拖拽时可用
+}
+
+function dragResultText(result) {
+  if (result.merged) return `合并 ×${result.quantity}`;
+  if (result.swapped) return '互换';
+  if (result.split) return `拆分 ×${result.quantity}`;
+  return result.moved ? '移动' : '';
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 纯转换：数据 → 视图模型
@@ -54,6 +89,7 @@ function toItemVM(item) {
     reserve: Number.isFinite(item.payload?.reserve) ? item.payload.reserve : null,
     reserveUnlimited: item.payload?.reserve === Infinity,
     instanceId: item.instanceId ?? null,
+    tier: item.payload?.tier ?? item.tier ?? null,
     readOnly: true,
   };
 }
@@ -222,6 +258,28 @@ function escapeHtml(value) {
     .replaceAll('"', '&quot;');
 }
 
+/** 物品类型的玩家语义名（详情栏与格子标题共用，不暴露内部 kind）。 */
+export const KIND_LABELS = {
+  material: '材料', blueprint: '蓝图', weapon: '武器', armor: '护甲',
+  grenade: '投掷物', consumable: '消耗品', attachment: '配件',
+};
+const TIER_LABELS = { low: '普通', med: '军用', high: '稀有' };
+
+/** 按类型给出 24×16 线框图标：本项目自绘，不使用参考游戏资产。 */
+const KIND_ICONS = {
+  material: '<rect x="4" y="5" width="16" height="9" rx="1"/><path d="M4 9h16M10 5v9"/>',
+  blueprint: '<rect x="3" y="2" width="18" height="12" rx="1"/><path d="M6 11l4-5 3 3 2-2 3 4"/>',
+  weapon: '<path d="M2 7h15l3-2v4h-6l-1 5h-3l1-5H2z"/>',
+  armor: '<path d="M12 2l7 3v4c0 3-3 5-7 6-4-1-7-3-7-6V5z"/>',
+  grenade: '<circle cx="11" cy="10" r="5"/><path d="M13 5l3-2h3"/>',
+  consumable: '<rect x="5" y="3" width="14" height="11" rx="2"/><path d="M12 6v5M9.5 8.5h5"/>',
+  attachment: '<circle cx="12" cy="8" r="5"/><circle cx="12" cy="8" r="1.5"/>',
+};
+function kindIcon(kind) {
+  const body = KIND_ICONS[kind] ?? KIND_ICONS.material;
+  return `<span class="raid-cell-icon" aria-hidden="true"><svg viewBox="0 0 24 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round">${body}</svg></span>`;
+}
+
 /** 槽位 view model → 格子 HTML。slotKey 是稳定槽位 id（'armor' / '0'..'N'）。 */
 export function cellHtml(container, slotKey, vm, options = {}) {
   const group = options.group ? ` data-raid-group="${escapeHtml(options.group)}"` : '';
@@ -240,9 +298,12 @@ export function cellHtml(container, slotKey, vm, options = {}) {
   const sub = vm.slotKind === 'weapon'
     ? `弹药 ${vm.ammo ?? '—'}/${vm.reserveUnlimited ? '∞' : (vm.reserve ?? '—')}`
     : `价值 ${(vm.value ?? 0) * (vm.quantity ?? 1)}`;
+  const tierAttr = vm.tier && TIER_LABELS[vm.tier] ? ` data-tier="${escapeHtml(vm.tier)}"` : '';
+  const kindAttr = vm.slotKind ? ` data-kind="${escapeHtml(vm.slotKind)}"` : '';
   return `<div class="raid-cell${selected}" data-raid-container="${container}"` +
-    ` data-raid-slot="${escapeHtml(slotKey)}"${group}${instance}${readonly}` +
+    ` data-raid-slot="${escapeHtml(slotKey)}"${group}${instance}${readonly}${tierAttr}${kindAttr}` +
     ` title="${escapeHtml(vm.name)} · ${escapeHtml(sub)}">` +
+    kindIcon(vm.slotKind) +
     `<span class="raid-cell-name">${escapeHtml(vm.name)}</span>` +
     `<span class="raid-cell-qty">${escapeHtml(qty)}</span>` +
     `<span class="raid-cell-sub">${escapeHtml(sub)}</span>` +
@@ -266,7 +327,8 @@ function equipmentCellHtml(model, options) {
 }
 
 function detailChip(model, item, note) {
-  const kind = item?.slotKind ?? '—';
+  const kind = (KIND_LABELS[item?.slotKind] ?? item?.slotKind ?? '—')
+    + (item?.tier && TIER_LABELS[item.tier] ? ` · ${TIER_LABELS[item.tier]}` : '');
   // 武器显示弹药、护甲是单件装备位（数量恒 1 是噪声），其余才显示 ×N/堆叠上限。
   const qty = item?.slotKind === 'weapon'
     ? '弹药 ' + (item.ammo ?? '—') + ' / ' + (item.reserveUnlimited ? '∞' : (item.reserve ?? '—'))
@@ -276,6 +338,17 @@ function detailChip(model, item, note) {
         ' · 单件价值 ' + (item?.value ?? 0);
   return `<span class="raid-detail-line">类型 ${escapeHtml(kind)} · ${escapeHtml(qty)}</span>` +
     `<span class="raid-detail-note">${escapeHtml(note)}</span>`;
+}
+
+/** 可拆分堆叠的数量滑块（数量 ≥2 才出现）。默认值 = 一半。 */
+function splitControlHtml(vm) {
+  if (!vm || (vm.quantity ?? 1) < 2) return '';
+  const half = Math.floor(vm.quantity / 2);
+  return `<div class="raid-split-control">` +
+    `<label>拆分 <span data-raid-split-value>×${half}</span></label>` +
+    `<input type="range" data-raid-split-input min="1" max="${vm.quantity - 1}" value="${half}" aria-label="拆分数量">` +
+    `<button type="button" data-raid-action="split">拆分</button>` +
+    `</div>`;
 }
 
 /**
@@ -312,6 +385,7 @@ export function detailHtml(model, selected) {
       html: `<div class="raid-detail" data-raid-selected="quickUse:${selected.index}">` +
         `<b class="raid-detail-name">${escapeHtml(vm?.name ?? '空槽')}</b>` +
         detailChip(model, vm, vm ? '快捷栏物品 · 使用或放回背包' : '快捷栏未放入物品') +
+        splitControlHtml(vm) +
         actions +
         `</div>`,
       container: 'quickUse',
@@ -324,6 +398,7 @@ export function detailHtml(model, selected) {
     const actions = vm
       ? `<div class="raid-detail-actions">` +
         `<button type="button" data-raid-action="quick-move">拿取到背包</button>` +
+        `<button type="button" data-raid-action="take-all">全部拿取</button>` +
         `</div>`
       : '';
     return {
@@ -332,6 +407,7 @@ export function detailHtml(model, selected) {
         detailChip(model, vm, model.container.opened
           ? (vm ? '容器物品 · 拿取成功后才计入携带物' : '容器空格 · 拿走或回放物品后落位')
           : model.container.placeholderText) +
+        splitControlHtml(vm) +
         actions +
         `</div>`,
       container: 'container',
@@ -342,10 +418,14 @@ export function detailHtml(model, selected) {
   const vm = selected.container === 'backpack'
     ? model.backpack.slots[selected.index]?.item ?? null
     : null;
-  const backpackActions = vm && model.container.opened
-    ? `<div class="raid-detail-actions">` +
-      `<button type="button" data-raid-action="to-container">放入容器</button>` +
-      `</div>`
+  const canQuick = vm && (vm.slotKind === 'grenade' || vm.slotKind === 'consumable');
+  const splitControl = splitControlHtml(vm);
+  const backpackButtons = [
+    canQuick ? `<button type="button" data-raid-action="to-quickuse">放入快捷栏</button>` : '',
+    vm && model.container.opened ? `<button type="button" data-raid-action="to-container">放入容器</button>` : '',
+  ].join('');
+  const backpackActions = backpackButtons
+    ? `<div class="raid-detail-actions">${backpackButtons}</div>`
     : '';
   const note = selected.container === 'backpack'
     ? (model.container.opened
@@ -356,6 +436,7 @@ export function detailHtml(model, selected) {
     html: `<div class="raid-detail" data-raid-selected="${escapeHtml(selected.container)}:${escapeHtml(selected.slotKey)}">` +
       `<b class="raid-detail-name">${escapeHtml(vm?.name ?? '背包格')}</b>` +
       detailChip(model, vm, note) +
+      splitControl +
       backpackActions +
       `</div>`,
   };
@@ -405,8 +486,8 @@ export function renderRaidInventoryModel(model, options = {}) {
     `<button type="button" class="raid-close-btn" data-raid-action="close-panel">` +
     `关闭 <span class="raid-close-hint">Tab / Esc</span></button>`;
   const defaultHints = model.container.opened
-    ? `<b>Tab</b> / <b>Esc</b> 关闭 · 点击容器物品选中后「拿取到背包」 · 局内装备不可更换`
-    : '<b>Tab</b> / <b>Esc</b> 关闭 · 点击槽位查看详情 · 局内装备不可更换';
+    ? `<b>Tab</b> / <b>Esc</b> 关闭 · <b>拖拽</b>移动/合并/互换 · <b>Ctrl+拖</b>拆一半 · <b>双击</b>快速转移 · <b>F</b> 全部拿取`
+    : '<b>Tab</b> / <b>Esc</b> 关闭 · <b>拖拽</b>移动/合并/互换 · <b>Ctrl+拖</b>拆一半 · <b>双击</b>放入快捷栏';
   const hints = options.hints ?? defaultHints;
 
   return (
@@ -480,9 +561,181 @@ export class RaidInventoryView {
     if (this._bound || !this.root) return;
     this._bound = true;
     this.root.addEventListener('click', (event) => this.onClick(event));
+    this.root.addEventListener('dblclick', (event) => this.onQuickMove(event));
+    this.root.addEventListener('contextmenu', (event) => {
+      event.preventDefault?.();
+      this.onQuickMove(event);
+    });
+    this.root.addEventListener('pointerdown', (event) => this.onPointerDown(event));
+    this.root.addEventListener('pointermove', (event) => this.onPointerMove(event));
+    this.root.addEventListener('pointerup', (event) => this.onPointerUp(event));
+    this.root.addEventListener('pointercancel', () => this.cancelDrag());
+    this.root.addEventListener('lostpointercapture', () => this.cancelDrag());
+    this.root.addEventListener('input', (event) => this.onSplitInput(event));
+    if (typeof window !== 'undefined') window.addEventListener('blur', () => this.cancelDrag());
+  }
+
+  // ── 拖拽（指针事件委托）────────────────────────────────────────────────
+  // 拖拽期间数据完全不动：只有松手且目标合法时才调用 moveToSlot 原子提交。
+  // Ctrl+拖拽 = 拆一半（ARC 的 Split Stack；Alt 在本项目是翻滚、浏览器也会抢）。
+  // 装备栏只读，不能作为拖拽来源或目标。
+
+  /** 物品格 DOM → 数据地址；装备格、容器占位格返回 null。 */
+  cellRef(cell) {
+    const container = cell?.dataset?.raidContainer;
+    if (!DRAGGABLE_CONTAINERS.has(container)) return null;
+    if (cell.classList?.contains('raid-cell-placeholder')) return null;
+    const index = Number.parseInt(cell.dataset.raidSlot, 10);
+    return Number.isInteger(index) ? { container, index } : null;
+  }
+
+  onPointerDown(event) {
+    if (this.drag || event.button !== 0 || event.isPrimary === false) return;
+    const cell = event.target?.closest?.('.raid-cell[data-raid-container]');
+    if (!cell || cell.classList.contains('empty')) return;
+    const ref = this.cellRef(cell);
+    if (!ref) return;
+    const item = resolveSlotItem(this.player?.raidInventory, ref);
+    if (!item) return;
+    this.drag = {
+      pointerId: event.pointerId,
+      sourceEl: cell,
+      from: ref,
+      item,
+      split: !!(event.ctrlKey || event.metaKey) && (item.quantity ?? 1) > 1,
+      startX: event.clientX,
+      startY: event.clientY,
+      started: false,
+      targetEl: null,
+      ghost: null,
+    };
+  }
+
+  onPointerMove(event) {
+    const d = this.drag;
+    if (!d || d.pointerId !== event.pointerId) return;
+    if (!d.started) {
+      if (Math.hypot(event.clientX - d.startX, event.clientY - d.startY) < DRAG_THRESHOLD_PX) return;
+      d.started = true;
+      d.sourceEl.classList.add('dragging');
+      d.ghost = this.createGhost(d);
+      try { this.root.setPointerCapture?.(event.pointerId); } catch { /* 指针已失效 */ }
+    }
+    event.preventDefault?.();
+    if (d.ghost) {
+      d.ghost.style.left = `${event.clientX}px`;
+      d.ghost.style.top = `${event.clientY}px`;
+    }
+    this.updateDropTarget(event.clientX, event.clientY);
+  }
+
+  onPointerUp(event) {
+    const d = this.drag;
+    if (!d || d.pointerId !== event.pointerId) return;
+    const target = d.started ? d.targetEl : null;
+    const started = d.started;
+    this.cancelDrag();
+    if (!started) return;              // 没越过阈值 = 普通点击，交给 click 处理
+    // 拖拽松手后浏览器可能紧跟一个合成 click（也可能没有）：只吞 250ms 内的那一次，
+    // 否则会把玩家之后真正的点击吃掉
+    this._suppressClickUntil = Date.now() + 250;
+    const to = target ? this.cellRef(target) : null;
+    if (!to) return;
+    const quantity = d.split ? Math.floor((d.item.quantity ?? 1) / 2) : undefined;
+    const result = moveToSlot(this.player?.raidInventory, d.from, to,
+      quantity === undefined ? {} : { quantity });
+    if (result?.ok) {
+      this.selected = null;
+      this.refresh();
+    }
+    this.options.onActionResult?.(result?.ok
+      ? { ...result, dragged: true, reason: dragResultText(result) }
+      : result);
+  }
+
+  /** 按指针位置找目标格，并给出可放 / 不可放的预览。 */
+  updateDropTarget(x, y) {
+    const d = this.drag;
+    const doc = this.root?.ownerDocument;
+    const hit = doc?.elementFromPoint?.(x, y)?.closest?.('.raid-cell[data-raid-container]') ?? null;
+    if (hit === d.targetEl) return;
+    d.targetEl?.classList.remove('drop-ok', 'drop-bad');
+    d.targetEl = hit;
+    if (!hit || hit === d.sourceEl) return;
+    const to = this.cellRef(hit);
+    const verdict = to ? previewMove(this.player?.raidInventory, d.from, to, d.split) : { ok: false };
+    hit.classList.add(verdict.ok ? 'drop-ok' : 'drop-bad');
+  }
+
+  createGhost(d) {
+    const doc = this.root?.ownerDocument;
+    if (!doc?.body) return null;
+    const ghost = doc.createElement('div');
+    ghost.className = 'raid-drag-ghost';
+    ghost.innerHTML = d.sourceEl.innerHTML;
+    if (d.split) {
+      const half = Math.floor((d.item.quantity ?? 1) / 2);
+      ghost.insertAdjacentHTML('beforeend', `<span class="raid-ghost-split">拆分 ×${half}</span>`);
+    }
+    doc.body.appendChild(ghost);
+    return ghost;
+  }
+
+  /** 取消拖拽：只清视觉层（数据从未移动）。面板关闭 / 失焦 / 指针取消共用。 */
+  cancelDrag() {
+    const d = this.drag;
+    if (!d) return;
+    this.drag = null;
+    d.sourceEl?.classList.remove('dragging');
+    d.targetEl?.classList.remove('drop-ok', 'drop-bad');
+    d.ghost?.remove();
+    try { this.root?.releasePointerCapture?.(d.pointerId); } catch { /* 已释放 */ }
+  }
+
+  // ── 拆分面板（详情栏里的数量滑块）─────────────────────────────────────
+
+  onSplitInput(event) {
+    const el = event.target;
+    if (!el?.matches?.('[data-raid-split-input]')) return;
+    this.splitAmount = Number.parseInt(el.value, 10);
+    const label = this.root?.querySelector?.('[data-raid-split-value]');
+    if (label) label.textContent = `×${this.splitAmount}`;
+  }
+
+  /**
+   * ARC 式快速转移：双击 / 右键 / Shift+点击 按所在栏选择唯一合理去向 ——
+   * 容器→背包、背包→容器（容器打开时）或快捷栏（投掷物/消耗品）、快捷栏→背包。
+   * 仍然只走原子 API，失败时什么都不动。
+   */
+  onQuickMove(event) {
+    const target = event?.target;
+    const cell = typeof target?.closest === 'function'
+      ? target.closest('.raid-cell[data-raid-container]') : null;
+    if (!cell || cell.classList?.contains('empty')) return null;
+    if (!this.select(cell.dataset.raidContainer, cell.dataset.raidSlot)) return null;
+    const result = this.handleAction(this.quickMoveAction());
+    this.options.onActionResult?.(result);
+    return result;
+  }
+
+  /** 当前选中格的默认快速转移动作。 */
+  quickMoveAction() {
+    const sel = this.selected;
+    if (!sel) return null;
+    if (sel.container === 'container') return 'quick-move';
+    if (sel.container === 'quickUse') return 'discard';
+    if (sel.container === 'backpack') {
+      if (this.player?.raidInventory?.openContainer?.items) return 'to-container';
+      return 'to-quickuse';
+    }
+    return null;
   }
 
   onClick(event) {
+    if (this._suppressClickUntil && Date.now() < this._suppressClickUntil) {
+      this._suppressClickUntil = 0;
+      return;
+    }
     const target = event?.target;
     const finder = target?.closest;
     if (typeof finder !== 'function') return;
@@ -493,7 +746,9 @@ export class RaidInventoryView {
       return;
     }
     const cell = finder.call(target, '.raid-cell[data-raid-container]');
-    if (cell) this.select(cell.dataset.raidContainer, cell.dataset.raidSlot);
+    if (!cell) return;
+    if (event?.shiftKey) { this.onQuickMove(event); return; }
+    this.select(cell.dataset.raidContainer, cell.dataset.raidSlot);
   }
 
   /**
@@ -534,25 +789,29 @@ export class RaidInventoryView {
   }
 
   /**
-   * 面板操作。所有改写都必须走 raid-inventory 原子 API，失败完整回滚：
-   *   close-panel 关闭面板（onCloseRequest → main.js 收口，无回调时本地 close）
-   *   quick-move  容器格 → 背包（transferItem 原子转移；容器满/背包满不丢物）
-   *   to-container 背包格 → 打开的容器（容量判定由 transferItem 负责）
-   *   use         quickUse 手雷 → attemptGrenadeThrow（thrower 返回真值才扣减）
-   *   use         quickUse 消耗品 → options.useConsumable（未接入不扣减）
-   *   discard     quickUse 槽 → clearQuickUseSlot（放回背包，失败完整回滚）
-   *   equipment   只读拒绝；quickUse → 容器方向明确拒绝（快捷栏是投掷唯一真源）。
+   * 面板操作。所有改写都必须走 raid-inventory 原子 API,失败完整回滚:
+   *   close-panel 关闭面板(onCloseRequest → main.js 收口,无回调时本地 close)
+   *   quick-move  容器格 → 背包(transferItem 原子转移;容器满/背包满不丢物)
+   *   to-container 背包格 → 打开的容器(容量判定由 transferItem 负责)
+   *   to-quickuse 背包格 → 快捷栏第一个空格
+   *   use         quickUse 手雷 → attemptGrenadeThrow(thrower 返回真值才扣减)
+   *   use         quickUse 消耗品 → options.useConsumable(未接入不扣减)
+   *   discard     quickUse 槽 → clearQuickUseSlot(放回背包,失败完整回滚)
+   *   split       当前选中格 → splitStack 拆分到同组第一个空格
+   *   equipment   只读拒绝;quickUse → 容器方向明确拒绝(快捷栏是投掷唯一真源)。
    */
   handleAction(action) {
-    // 关闭按钮不依赖选中槽：任何时候都可收起面板。
+    // 关闭按钮不依赖选中槽:任何时候都可收起面板。
     if (action === 'close-panel') {
       if (typeof this.options.onCloseRequest === 'function') this.options.onCloseRequest();
       else this.close();
       return { ok: true, closed: true };
     }
+    const raid = this.player?.raidInventory ?? null;
+    if (action === 'take-all') return this.takeAll();
+    if (action === 'split') return this.split();
     const sel = this.selected;
     if (!sel) return { ok: false, reason: '未选中物品' };
-    const raid = this.player?.raidInventory ?? null;
 
     if (sel.container === 'container') {
       if (action !== 'quick-move') {
@@ -566,12 +825,20 @@ export class RaidInventoryView {
     }
 
     if (sel.container === 'backpack') {
-      if (action !== 'to-container') {
-        return { ok: false, reason: '背包仅支持「放入容器」' };
-      }
       const vm = buildRaidInventoryModel(this.player, this.loadout, this.options)
         .backpack.slots[sel.index]?.item ?? null;
       if (!vm) return { ok: false, reason: '背包该格没有物品' };
+      if (action === 'to-quickuse') {
+        const quick = raid?.quickUse ?? [];
+        const free = quick.findIndex((it) => !it);
+        if (free < 0) return { ok: false, reason: '快捷栏已满 · 先放回一件' };
+        const result = setQuickUseSlot(raid, free, vm.instanceId);
+        if (result?.ok) this._afterMutation();
+        return result;
+      }
+      if (action !== 'to-container') {
+        return { ok: false, reason: '背包仅支持「放入容器 / 快捷栏」' };
+      }
       const result = transferItem(raid, 'backpack', 'container', vm.instanceId);
       if (result?.ok) this._afterMutation();
       return result;
@@ -607,6 +874,52 @@ export class RaidInventoryView {
     }
     if (result?.ok) this._afterMutation();
     return result;
+  }
+
+  /**
+   * 拆分堆叠：读当前选中格的 splitAmount（通过滑块/输入框设置），
+   * 调用 splitStack 原子拆分到同组第一个空格。
+   */
+  split() {
+    const sel = this.selected;
+    if (!sel) return { ok: false, reason: '未选中物品' };
+    const raid = this.player?.raidInventory ?? null;
+    const ref = { container: sel.container, index: sel.index };
+    const item = resolveSlotItem(raid, ref);
+    if (!item) return { ok: false, reason: '该格没有物品' };
+    if ((item.quantity ?? 1) <= 1) return { ok: false, reason: '数量不足 · 无法拆分' };
+    const quantity = Number.isInteger(this.splitAmount) && this.splitAmount > 0
+      ? Math.min(this.splitAmount, item.quantity - 1)
+      : Math.floor(item.quantity / 2);
+    const result = splitStack(raid, ref, quantity);
+    if (result?.ok) {
+      this.splitAmount = null;
+      this._afterMutation();
+    }
+    return result;
+  }
+
+  /**
+   * 全部拿取：按容器顺序逐件原子转移，装不下的留在箱里并汇报件数。
+   * 每件独立成败 —— 背包满只会停在「剩 N 件」，不会把前面成功的回滚掉。
+   */
+  takeAll() {
+    const raid = this.player?.raidInventory ?? null;
+    const items = raid?.openContainer?.items;
+    if (!Array.isArray(items) || items.length === 0) return { ok: false, reason: '容器里没有物品' };
+    let moved = 0;
+    let lastReason = null;
+    for (const item of [...items]) {
+      if (!item) continue;
+      const result = transferItem(raid, 'container', 'backpack', item);
+      if (result?.ok) moved++;
+      else lastReason = result?.reason ?? lastReason;
+    }
+    this.selected = null;
+    this.refresh();
+    const left = raid.openContainer.items.filter(Boolean).length;
+    if (moved === 0) return { ok: false, reason: lastReason ?? '背包已满' };
+    return { ok: true, moved, left, reason: left ? `已拿取 ${moved} 件 · 剩 ${left} 件装不下` : `已拿取 ${moved} 件` };
   }
 
   _afterMutation() {
@@ -646,8 +959,10 @@ export class RaidInventoryView {
   }
 
   close() {
+    this.cancelDrag();
     this.isOpen = false;
     this.selected = null;
+    this.splitAmount = null;
     if (this.root?.classList) this.root.classList.remove('open');
     this.setAriaHidden(true);
     return true;

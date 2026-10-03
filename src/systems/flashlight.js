@@ -47,7 +47,9 @@ export class Flashlight {
 
   toggle() {
     this.on = !this.on;
-    this.light.visible = this.on;
+    // PERF: 用 intensity 替代 visible 切换，避免 three.js 在光源数量变化时重编译所有材质 shader
+    this.light.intensity = this.on ? LIGHT.flashlight.intensity : 0;
+    this.light.shadow.autoUpdate = this.on;
     return this.on;
   }
 
@@ -67,7 +69,7 @@ export class Flashlight {
     this.light.position.copy(this._pos);
     this.target.position.copy(this._pos).addScaledVector(this._dir, 8);
     this.nearGlow.position.copy(this._pos);
-    this.nearGlow.visible = !this.on;
+    this.nearGlow.intensity = this.on ? 0 : (LIGHT.flashlight.nearGlowIntensity ?? 8);
 
     // 光斑：锥光中心射线的命中点
     if (this.on) {
@@ -153,7 +155,10 @@ export class EnemyFlashlights {
         E.color, E.intensity, E.distance,
         halfAngle, E.penumbra, E.decay
       );
-      light.visible = false;
+      // PERF: 光源始终 visible，通过 intensity=0 关闭，避免 three.js shader 重编译
+      light.visible = true;
+      light.intensity = 0;
+      light.shadow.autoUpdate = false;
 
       // 无条件投阴影：不投阴影的光源会穿墙，那比少一个光源难看得多
       light.castShadow = true;
@@ -195,7 +200,12 @@ export class EnemyFlashlights {
     for (let i = 0; i < this.slots.length; i++) {
       const slot = this.slots[i];
       const entry = live[i];
-      if (!entry) { slot.light.visible = false; continue; }
+      if (!entry) {
+        // PERF: 用 intensity=0 替代 visible=false，保持光源数量恒定
+        slot.light.intensity = 0;
+        slot.light.shadow.autoUpdate = false;
+        continue;
+      }
 
       const e = entry.e;
       // 灯朝敌人正面；待机时缓慢扫视（光斑扫过是玩家的预警信号）
@@ -215,7 +225,9 @@ export class EnemyFlashlights {
 
       slot.light.position.copy(this._pos);
       slot.target.position.copy(this._pos).addScaledVector(this._dir, 8);
-      slot.light.visible = true;
+      // PERF: 设置 intensity 而非 visible，保持活动光源数量不变
+      slot.light.intensity = this.cfg.intensity;
+      slot.light.shadow.autoUpdate = true;
     }
   }
 }
@@ -245,9 +257,11 @@ export class FlashPool {
     for (let i = 0; i < size; i++) {
       const l = new THREE.PointLight(0xffffff, 0, LIGHT.muzzle.distance, 1.8);
       l.castShadow = false;
-      l.visible = false;
+      // PERF: 光源始终 visible，通过 intensity=0 关闭，避免 shader 重编译
+      l.visible = true;
+      l.intensity = 0;
       scene.add(l);
-      this.items.push({ light: l, until: 0, peak: 0, life: 1 });
+      this.items.push({ light: l, active: false, until: 0, peak: 0, life: 1 });
     }
     this.cursor = 0;
     /** (x,y,z) => boolean：该点是否对玩家可见。未注入时一律点亮。 */
@@ -272,7 +286,7 @@ export class FlashPool {
     it.light.color.setHex(color);
     it.light.distance = distance;
     it.light.intensity = intensity;
-    it.light.visible = true;
+    it.active = true;
     it.peak = intensity;
     it.life = lifeMs / 1000;
     it.until = it.life;
@@ -280,10 +294,10 @@ export class FlashPool {
 
   update(dt) {
     for (const it of this.items) {
-      if (!it.light.visible) continue;
+      if (!it.active) continue;
       it.until -= dt;
       if (it.until <= 0) {
-        it.light.visible = false;
+        it.active = false;
         it.light.intensity = 0;
       } else {
         it.light.intensity = it.peak * (it.until / it.life);

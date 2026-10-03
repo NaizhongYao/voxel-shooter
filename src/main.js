@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { RENDER, LIGHT, PLAYER, WORLD, PALETTE, GRENADE, INPUT, grenadeInventory } from './config.js';
+import { RENDER, LIGHT, PLAYER, WORLD, PALETTE, GRENADE, INPUT, EXTRACTION, LOOT_SEARCH, grenadeInventory } from './config.js';
 import { D } from './difficulty.js';
 import { LEVELS, getLevel, countEnemies } from './level/index.js';
 import { DoorManager } from './systems/doors.js';
@@ -124,7 +124,8 @@ const hud = {
   dbgKeys: $('dbg-keys'),
   banner: $('banner'), bannerTitle: $('banner-title'), bannerBody: $('banner-body'),
   bannerLoot: $('banner-loot'),
-  prompt: $('prompt'), stats: $('stats'), boot: $('boot'),
+  prompt: $('prompt'), holdProgress: $('hold-progress'), holdProgressBar: $('hold-progress-bar'),
+  stats: $('stats'), boot: $('boot'),
   brief: $('brief'), briefGo: $('brief-go'), briefPrev: $('brief-prev'),
   briefNext: $('brief-next'), briefDots: $('brief-dots'), diffs: $('diffs'),
   expose: $('expose'), exposeFill: $('expose-fill'),
@@ -132,6 +133,8 @@ const hud = {
   nadeKind: $('nade-kind'), flashWhite: $('flash-white'),
   missions: $('missions'), msGrid: $('ms-grid'), mapFull: $('map-full'),
   minimap: $('minimap'), mmBox: $('mm-box'), mmHere: $('mm-here'),
+  fullscreenMap: $('fullscreen-map'), fmContent: $('fullscreen-map-content'),
+  fmLevel: $('fm-level'), fmHere: $('fm-here'),
   equipment: $('equipment'),
   quickWheel: $('quick-wheel'),
   raidInventory: $('raid-inventory'),
@@ -366,6 +369,101 @@ function markRoomSeen(id) {
   seenRooms.add(id);
   hud.mmBox?.querySelector(`.mm-room[data-room="${id}"]`)?.classList.add('seen');
   hud.mmBox?.querySelector(`.mm-label[data-label="${id}"]`)?.classList.add('seen');
+  // 全屏地图也同步已探索状态
+  hud.fmContent?.querySelector(`.mm-room[data-room="${id}"]`)?.classList.add('seen');
+  hud.fmContent?.querySelector(`.mm-label[data-label="${id}"]`)?.classList.add('seen');
+}
+
+/**
+ * ── 全屏战术地图（M）────────────────────────────────────────────────────
+ *
+ * 与小地图同一个数据源（renderMinimapSvg：关卡房间矩形，世界坐标 viewBox），
+ * 所以同样结构上画不出敌人和家具 —— 不能用 floorplan-svg（那是开发平面图，
+ * 会把每件家具画出来，坐标也是像素格）。额外信息只有两类：
+ *   · 玩家亲眼靠近过的战利品箱（fmSeenBoxes，未开 / 已搜过两态）；
+ *   · 到撤离点的直线虚线 + 距离。
+ * 打开不暂停世界，也不退出指针锁定；地图只读，没有可点击的东西。
+ */
+const fmSeenBoxes = new Set();
+let fmPlayerArrow = null;
+let fmRoute = null;
+const FM_BOX_SEEN_RANGE = 6;   // 走到 6 vox 内（大约同一间房）才把箱子记到地图上
+
+function renderFullscreenMap() {
+  if (!hud.fmContent) return;
+  hud.fmContent.innerHTML = renderMinimapSvg(LEVEL).svg;
+  const svgEl = hud.fmContent.querySelector('svg');
+  for (const id of seenRooms) {
+    hud.fmContent.querySelector(`.mm-room[data-room="${id}"]`)?.classList.add('seen');
+    hud.fmContent.querySelector(`.mm-label[data-label="${id}"]`)?.classList.add('seen');
+  }
+  fmPlayerArrow = hud.fmContent.querySelector('.mm-player');
+  if (svgEl && LEVEL.spawn) {
+    fmRoute = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    fmRoute.setAttribute('class', 'fm-route');
+    fmRoute.setAttribute('x2', LEVEL.spawn.x.toFixed(2));
+    fmRoute.setAttribute('y2', LEVEL.spawn.z.toFixed(2));
+    // 路线画在玩家箭头下面
+    svgEl.insertBefore(fmRoute, fmPlayerArrow ?? null);
+  }
+  if (hud.fmLevel) hud.fmLevel.textContent = LEVEL.name ?? LEVEL.id;
+  drawFullscreenMapBoxes();
+}
+
+/** 只画见过的箱子；状态（未开 / 已搜过）每次打开地图时重画。 */
+function drawFullscreenMapBoxes() {
+  const svgEl = hud.fmContent?.querySelector('svg');
+  if (!svgEl) return;
+  svgEl.querySelectorAll('.fm-loot').forEach((n) => n.remove());
+  for (const c of lootContainers.containers) {
+    if (!fmSeenBoxes.has(c.id)) continue;
+    const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    const emptied = c.opened && !c.hasLoot;
+    r.setAttribute('class', `fm-loot${c.opened ? ' opened' : ''}${c.tier === 'high' && !emptied ? ' high' : ''}`);
+    r.setAttribute('x', (c.pos.x - 0.6).toFixed(2));
+    r.setAttribute('y', (c.pos.z - 0.6).toFixed(2));
+    r.setAttribute('width', '1.2');
+    r.setAttribute('height', '1.2');
+    svgEl.insertBefore(r, fmRoute ?? fmPlayerArrow ?? null);
+  }
+}
+
+/** 每帧：记录靠近过的箱子（不论地图开没开）。 */
+function trackSeenBoxes() {
+  for (const c of lootContainers.containers) {
+    if (fmSeenBoxes.has(c.id)) continue;
+    if (Math.hypot(c.pos.x - player.pos.x, c.pos.z - player.pos.z) <= FM_BOX_SEEN_RANGE) {
+      fmSeenBoxes.add(c.id);
+    }
+  }
+}
+
+function setFullscreenMap(open) {
+  game.mapOpen = open;
+  if (open) {
+    if (!fmPlayerArrow) renderFullscreenMap();
+    else drawFullscreenMapBoxes();
+    updateFullscreenMap();
+  }
+  hud.fullscreenMap?.classList.toggle('open', open);
+  hud.fullscreenMap?.setAttribute('aria-hidden', String(!open));
+}
+
+function updateFullscreenMap() {
+  if (!game.mapOpen || !fmPlayerArrow) return;
+  const px = player.pos.x.toFixed(2), pz = player.pos.z.toFixed(2);
+  const deg = (-cam.yaw * 180) / Math.PI;
+  fmPlayerArrow.setAttribute('transform', `translate(${px} ${pz}) rotate(${deg.toFixed(1)})`);
+  if (fmRoute) {
+    fmRoute.setAttribute('x1', px);
+    fmRoute.setAttribute('y1', pz);
+  }
+  const id = roomAt(LEVEL, player.pos.x, player.pos.z);
+  const dist = LEVEL.spawn
+    ? Math.ceil(Math.hypot(player.pos.x - LEVEL.spawn.x, player.pos.z - LEVEL.spawn.z)) : 0;
+  if (hud.fmHere) {
+    hud.fmHere.textContent = `${id ? (LEVEL.roomLabels?.[id] ?? id) : '室外'} · 撤离点 ${dist} m`;
+  }
 }
 
 // ── Game state ─────────────────────────────────────────────────────────────
@@ -374,7 +472,16 @@ const game = {
   killed: 0,
   over: false,
   won: false,
+  /** 携带物 > 0（带货撤离有收益）；由 updateExtractionState 每帧同步 */
   extractReady: false,
+  /** 全灭奖励：撤离时材料 ×1.25，不再是撤离门槛 */
+  clearBonus: false,
+  /** 撤离长按进度 0..1 */
+  extractHold: 0,
+  /** 首次开箱搜索长按进度 0..1 */
+  searchHold: 0,
+  /** 正在长按开箱的目标 LootContainer */
+  searchTarget: null,
   startTime: performance.now() / 1000,
   endTime: 0,
   /** 本局用时（秒）：结算评级与存档字段共用 */
@@ -390,6 +497,7 @@ const game = {
   nades: 0,
   nadeKind: null,
   playerFlash: 0,
+  playerFlashMs: 1200,
   /** 玩家死亡后的镇头时间：让倒地动画播完再弹结算面板 */
   deathHold: 0,
   /**
@@ -603,12 +711,16 @@ const raidInventoryView = createRaidInventoryView(player, loadout, {
       toast(result.remaining > 0
         ? `${name} ×${result.remaining}`
         : `${name} 已用尽`, 900);
+    } else if (Number.isInteger(result.moved) && result.moved > 0) {
+      audio.pickup();
+      toast(result.reason, 1400);
     } else if (result.cleared) {
       const name = result.item?.name ?? '物品';
       toast(`${name} · 已放回背包`, 1100);
     } else if (result.target === 'backpack') {
       // 容器拿取：成功才计入携带物（HUD 与结算同一视图）
       const name = result.item?.name ?? '物品';
+      audio.pickup();
       toast(`拿取 ${name} ×${result.item?.quantity ?? 1} · 已放入背包`, 1100);
     } else if (result.target === 'container') {
       const name = result.item?.name ?? '物品';
@@ -627,6 +739,7 @@ function openRaidInventory() {
   if (game.inventoryOpen) return;
   if (pendingWeaponSwap) { toast('先完成替换槽位选择', 1100); return; }
   if (quickWheel.isOpen) quickWheel.close();   // 互斥：背包优先，轮盘先收
+  if (game.mapOpen) setFullscreenMap(false);
   game.inventoryOpen = true;
   raidInventoryView.open();
   document.exitPointerLock?.();
@@ -1245,8 +1358,11 @@ function updateObjectiveHud(extractDistance = null) {
       player.pos.x - SPAWN.x, player.pos.z - SPAWN.z
     );
     hud.objective?.classList.add('extracting');
-    if (hud.objectiveLabel) hud.objectiveLabel.textContent = '撤离准备';
-    hud.enemies.textContent = `前往庭院撤离 · ${Math.max(0, Math.ceil(distance))} m`;
+    if (hud.objectiveLabel) {
+      hud.objectiveLabel.textContent = game.clearBonus ? '撤离 · 全灭加成' : '可撤离 · 带货';
+    }
+    hud.enemies.textContent =
+      `${player.carryCount} 件 · 庭院 ${Math.max(0, Math.ceil(distance))} m`;
     return;
   }
 
@@ -1264,6 +1380,13 @@ combat.onPlayerHit = (dmg, zone) => {
   cam.kick(0.4);
   // 受击：准星大幅扩散（无无敌帧，被打中基本还不了手）
   player.hitStun = 0.3;
+  // 受击打断撤离与撬锁：在交火里不能「站着读条」
+  if (game.extractHold > 0 || game.searchHold > 0) {
+    game.extractHold = 0;
+    game.searchHold = 0;
+    game.searchTarget = null;
+    toast('受击 · 操作被打断', 900);
+  }
   if (r.died) killPlayer();
 };
 
@@ -1276,6 +1399,7 @@ combat.onPlayerHit = (dmg, zone) => {
  */
 function killPlayer() {
   if (player.rig.deathAmt > 0) return;
+  if (game.mapOpen) setFullscreenMap(false);
   // 死亡瞬间收起轮盘与局内背包（世界仍继续到镇头结束，
   // 不能留下悬浮的双环或只读面板盖住画面；死亡结算不得残留 overlay）。
   // 容器会话一并清理：已拿物随既有丢失规则处理，容器剩余物不凭空发放。
@@ -1305,14 +1429,27 @@ combat.onKill = (enemy) => {
    */
   pickups.dropWeapon(enemy.pos, enemy.weapon.spec.id,
     enemy.weapon.ammo, Math.floor(enemy.weapon.spec.reserve * 0.25) || 20);
+  // 敌人死亡：方块爆散（DRIFT D10 接线）。倒地动画与血迹贴花仍保留。
+  effects.deathBurst(enemy.pos, PALETTE.threat, 14);
 
-  if (game.killed >= game.totalEnemies) {
-    game.extractReady = true;
-    extractMesh.visible = true;
-    updateObjectiveHud();
-    toast('全部目标已清除 · 前往庭院撤离', 4000);
+  // 全灭是奖励条件，不是撤离门槛（DECISIONS 2026-08-29 第 2 条）
+  if (game.killed >= game.totalEnemies && !game.clearBonus) {
+    game.clearBonus = true;
+    toast('全部目标已清除 · 撤离时材料 ×1.25', 4000);
   }
 };
+
+/**
+ * 撤离点常驻可用：带货撤离有收益，空手撤离成功但 0 收益。
+ * 这里只负责「有没有带货」这一层提示状态，每帧调用，状态变化才写 DOM。
+ */
+function updateExtractionState() {
+  const hasLoot = player.carryCount > 0;
+  if (hasLoot === game.extractReady) return;
+  game.extractReady = hasLoot;
+  updateObjectiveHud();
+  if (hasLoot) toast('已携带物品 · 可前往庭院撤离', 2200);
+}
 
 /**
  * 手雷爆炸的伤害结算。玩家和敌人走同一套规则：
@@ -1350,6 +1487,7 @@ grenades.onExplode = (pos, ownerIsPlayer, spec = GRENADE) => {
     }
     if (grenades.canBlind(pos, player.pos.x, player.pos.y + 1.0, player.pos.z, spec)) {
       game.playerFlash = 1;
+      game.playerFlashMs = spec.playerFlashMs ?? 1200;
     }
     combat.emitNoise(pos.x, pos.y, pos.z, spec.noise);
     return;
@@ -1424,7 +1562,7 @@ function toSaveStoreOutcome(settle, clearBonus) {
     extracted: !!settle.won && carriedLoot.length > 0,
     carriedLoot,
     enemiesKilled: settle.killed ?? 0,
-    clearBonus: !!clearBonus,   // 全灭（点亮撤离点）奖励：材料 ×1.25
+    clearBonus: !!clearBonus,   // 全灭奖励：材料 ×1.25
   };
 }
 
@@ -1434,6 +1572,7 @@ function endGame(won) {
   // 容器会话清理：结算只读 player.carriedLoot 视图，容器剩余物不入结算。
   quickWheel.close();
   closeRaidInventory({ silent: true });
+  if (game.mapOpen) setFullscreenMap(false);
   closeContainerSession(player.raidInventory);
   if (game.over) return;
   game.over = true;
@@ -1486,7 +1625,7 @@ function endGame(won) {
   };
   try {
     const settleResult = saveStore.settleRaid(
-      toSaveStoreOutcome(settlePayload, game.extractReady)
+      toSaveStoreOutcome(settlePayload, game.clearBonus)
     );
     if (!settleResult?.ok) {
       console.error('[Main] settleRaid 失败:', settleResult?.error ?? 'no result');
@@ -1549,6 +1688,10 @@ let nearWeapon = null;
 let pendingWeaponSwap = null;
 let swapChoiceTimeout = null;
 let fireDebug = '–';
+// PERF-02: DOM 写入缓存，仅在值变化时写入
+let _lastShots = -1, _lastHits = -1, _lastFireDebug = null, _lastKeys = -1;
+let _lastSpreadPx = -1;
+let _lastExposure = -1, _lastExposeColor = '';
 /**
  * 轮盘 / 背包面板期间按住的左键被标记到此；关闭后必须松开重按才能开火
  * （防穿透：Q 轮盘松开确认不自动开火、Tab 关闭背包不恢复自动开火）。
@@ -1785,7 +1928,12 @@ function frame(nowMs) {
       toast(on ? '背景音乐已开' : '背景音乐已关', 900);
     }
 
-    if (input.justPressed('flashlight')) {
+    if (game.inventoryOpen && input.justPressed('flashlight')) {
+      // 背包打开时 F = 全部拿取（ARC 式容器快捷键）；手电不切换
+      if (player.raidInventory?.openContainer?.items) {
+        raidInventoryView.options.onActionResult?.(raidInventoryView.handleAction('take-all'));
+      }
+    } else if (input.justPressed('flashlight')) {
       const on = flashlight.toggle();
       hud.light.textContent = on ? 'ON' : 'OFF';
       hud.light.className = on ? 'v on' : 'v off';
@@ -1804,8 +1952,9 @@ function frame(nowMs) {
     if (input.justPressed('debug')) {
       hud.stats.style.display = hud.stats.style.display === 'none' ? '' : 'none';
     }
-    // 面板快捷键层：背包面板的 Tab/Esc 已在上方处理，这里只留未落地的地图占位。
-    if (input.justPressed('map')) game.mapOpen = !game.mapOpen;
+    // M 键打开/关闭全屏战术地图（首次打开时渲染完整平面图）
+    if (input.justPressed('map') && !invOpen) setFullscreenMap(!game.mapOpen);
+    else if (game.mapOpen && input.justPressed('cancel')) setFullscreenMap(false);
     // H 收起 / 展开小地图。想完全靠记路的人可以关掉它。
     if (input.justPressed('minimap')) {
       minimapOn = !minimapOn;
@@ -1897,7 +2046,7 @@ function frame(nowMs) {
     enemyLights.update(enemies, player.pos, now);
     // 头顶状态指示器：用相机位置做距离裁剪（第三人称下相机才是"眼睛"）。
     // 只剩最后 3 个敌人时无视距离与平静隐藏、全部亮标 —— 保证胜利条件永远可达。
-    indicators.update(cam.cam.position, now, dt, game.totalEnemies - game.killed <= 3);
+    indicators.update(cam.cam.position, now, dt, game.totalEnemies - game.killed <= 3, cam.yaw);
 
     // ── 门 ──
     // 门交互统一走 E 短按；X 已迁移为左右肩视角。门在体素网格里是实心方块，
@@ -1933,10 +2082,11 @@ function frame(nowMs) {
         if (result.ok) {
           audio.pickup();
           toast(`拾取 ${result.spec.name}`);
-          nearWeapon = null;
           // 批 5.1：pickUpAuto 落格后 active 就是目标槽 —— 镜像进局内
           // equipment 视图，结算 / carriedLoot 才看得到这把新枪。
+          // 必须在清空 nearWeapon 之前镜像，否则传入 null 直接早退。
           mirrorPickedPrimaryWeapon(nearWeapon, loadout.active);
+          nearWeapon = null;
         } else if (result.needChoice) {
           showWeaponSwapChoice(nearWeapon);
         }
@@ -1946,6 +2096,67 @@ function frame(nowMs) {
         if (nearDoor) toggleDoor(nearDoor);
         else if (nearLoot) interactLootContainer(nearLoot);
         else if (nearOpenable) interactOpenableFurniture(nearOpenable);
+      }
+    }
+
+    // 撤离状态先于提示与长按判定同步
+    updateExtractionState();  // 每帧同步：携带物 > 0 → extractReady
+    const inExtractZone = game.extractReady &&
+      Math.hypot(player.pos.x - SPAWN.x, player.pos.z - SPAWN.z) < EXTRACTION.radius;
+
+    // ── 首次开箱长按（撬锁） ──
+    // 按住 E 时就锁定目标并累计：不能等 releasedShort（那时 E 已松开，进度永远为 0）。
+    // 门优先：站在门边时 E 归门，不开始撬锁。
+    if (!game.searchTarget && nearLoot && !nearLoot.opened && !nearDoor
+      && !invOpen && !wheelOpen && input.down('interact')) {
+      game.searchTarget = nearLoot;
+      game.searchHold = 0;
+    }
+    if (game.searchTarget && !invOpen && !wheelOpen) {
+      const target = game.searchTarget;
+      // 目标箱子不存在或已经被别的方式打开：取消
+      if (!target || target.opened) {
+        game.searchTarget = null;
+        game.searchHold = 0;
+        hud.holdProgress.style.display = 'none';
+      }
+      // 距离过远：取消
+      else if (Math.hypot(player.pos.x - target.pos.x, player.pos.z - target.pos.z) > 2.5) {
+        game.searchTarget = null;
+        game.searchHold = 0;
+        hud.holdProgress.style.display = 'none';
+      }
+      // 按住 E：累计进度
+      else if (input.down('interact')) {
+        game.searchHold += dt;
+        const progress = Math.min(game.searchHold / LOOT_SEARCH.holdSec, 1);
+        hud.holdProgress.style.display = 'block';
+        hud.holdProgress.classList.remove('extract');
+        hud.holdProgressBar.style.width = `${(progress * 100).toFixed(0)}%`;
+        if (progress >= 1) {
+          // 撬锁完成：生成战利品、发出噪音、打开面板
+          const session = openContainerSession(player.raidInventory, target);
+          if (session) {
+            for (const item of session.items) {
+              if ((item?.slotKind ?? item?.kind) === 'blueprint') {
+                blueprintDropExclude.add(item.blueprintId ?? item.defId);
+              }
+            }
+            combat.emitNoise(target.pos.x, target.pos.y, target.pos.z, LOOT_SEARCH.noise, false);
+            audio.pickup();
+            openRaidInventory();
+            syncCarryHud();
+          }
+          game.searchTarget = null;
+          game.searchHold = 0;
+          hud.holdProgress.style.display = 'none';
+        }
+      }
+      // 松开 E：取消撬锁
+      else if (game.searchHold > 0) {
+        game.searchTarget = null;
+        game.searchHold = 0;
+        hud.holdProgress.style.display = 'none';
       }
     }
 
@@ -1965,7 +2176,7 @@ function frame(nowMs) {
       }
       if (nearLoot && !nearDoor) {
         hints.push(
-          `<b>E</b> ${nearLoot.opened ? '搜刮' : '打开'}${nearLoot.style.label}箱` +
+          `<b>${nearLoot.opened ? 'E' : '长按 E'}</b> ${nearLoot.opened ? '搜刮' : '撬锁打开'}${nearLoot.style.label}箱` +
           (nearLoot.opened && nearLoot.loot.length > 0
             ? ` · 剩 ${nearLoot.loot.length} 件` : '')
         );
@@ -1973,15 +2184,41 @@ function frame(nowMs) {
         hints.push(`<b>E</b> ${nearOpenable.open ? '关闭' : '搜查'}${openableFurniture.label(nearOpenable)}`);
       }
     }
+    // 撤离区提示
+    if (inExtractZone && !invOpen && !wheelOpen) {
+      hints.push('<b>长按 E</b> 撤离');
+    }
     hud.prompt.style.display = hints.length ? 'block' : 'none';
     if (hints.length) hud.prompt.innerHTML = hints.join('<br>');
 
     // ── 撤离判定 ──
+    
     if (game.extractReady) {
       const d = Math.hypot(player.pos.x - SPAWN.x, player.pos.z - SPAWN.z);
       updateObjectiveHud(d);
-      if (d < 1.6) endGame(true);
+      extractMesh.visible = true;
       extractMesh.material.opacity = 0.6 + Math.sin(now * 4) * 0.35;
+    } else {
+      extractMesh.visible = false;
+    }
+    
+    // 撤离区长按 E：站在绿色区域内按住 E 1.8 秒完成撤离
+    if (inExtractZone && !invOpen && !wheelOpen) {
+      if (input.down('interact')) {
+        game.extractHold += dt;
+        const progress = Math.min(game.extractHold / EXTRACTION.holdSec, 1);
+        hud.holdProgress.style.display = 'block';
+        hud.holdProgress.classList.add('extract');
+        hud.holdProgressBar.style.width = `${(progress * 100).toFixed(0)}%`;
+        if (progress >= 1) endGame(true);
+      } else if (game.extractHold > 0) {
+        game.extractHold = 0;
+        hud.holdProgress.style.display = 'none';
+      }
+    } else if (game.extractHold > 0) {
+      // 离开撤离区或打开背包/轮盘：重置进度
+      game.extractHold = 0;
+      hud.holdProgress.style.display = 'none';
     }
   } else if (input.justPressed('restart')) {
     // 立刻重开：跳过简报（已经读过一遍了，再看一遍是噪声）
@@ -2006,7 +2243,11 @@ function frame(nowMs) {
   const spreadPx = 8 + (loadout.current
     ? loadout.current.currentSpread(player.spreadMultiplier) * 1.6 : 0)
     + (player.hitStun > 0 ? 26 : 0);
-  hud.crosshair.style.setProperty('--gap', `${spreadPx.toFixed(1)}px`);
+  // PERF-04: 仅在扩散值显著变化时更新 CSS 变量
+  if (Math.abs(spreadPx - _lastSpreadPx) > 0.3) {
+    _lastSpreadPx = spreadPx;
+    hud.crosshair.style.setProperty('--gap', `${spreadPx.toFixed(1)}px`);
+  }
 
   renderer.render(scene, cam.cam);
 
@@ -2017,7 +2258,7 @@ function frame(nowMs) {
   }
   if (hud.flashWhite) {
     if (game.playerFlash > 0) {
-      game.playerFlash = Math.max(0, game.playerFlash - dt / 1.2);
+      game.playerFlash = Math.max(0, game.playerFlash - dt * 1000 / game.playerFlashMs);
       hud.flashWhite.style.opacity = String(game.playerFlash);
     } else {
       hud.flashWhite.style.opacity = '0';
@@ -2042,10 +2283,18 @@ function frame(nowMs) {
    * 这根条在往下掉。没有这个反馈，机制存在但玩家学不到。
    */
   const exposure = indicators.maxAlert;
-  hud.expose.style.opacity = exposure > 0.03 ? '1' : '0';
-  hud.exposeFill.style.width = `${(exposure * 100).toFixed(0)}%`;
-  hud.exposeFill.style.backgroundColor =
-    exposure > 0.85 ? '#e5484d' : exposure > 0.4 ? '#f5a623' : '#f5d76e';
+  // PERF-02: 按整数百分比去重，避免每帧重写三条 style
+  const exposePct = Math.round(exposure * 100);
+  if (exposePct !== _lastExposure) {
+    _lastExposure = exposePct;
+    hud.expose.style.opacity = exposure > 0.03 ? '1' : '0';
+    hud.exposeFill.style.width = `${exposePct}%`;
+    const color = exposure > 0.85 ? '#e5484d' : exposure > 0.4 ? '#f5a623' : '#f5d76e';
+    if (color !== _lastExposeColor) {
+      _lastExposeColor = color;
+      hud.exposeFill.style.backgroundColor = color;
+    }
+  }
   if (game.toastUntil > 0 && now > game.toastUntil) {
     hud.toast.style.opacity = '0';
     game.toastUntil = 0;
@@ -2059,14 +2308,33 @@ function frame(nowMs) {
     game.revealed = true;
     toast('剩余目标已暴露 · 肃清他们', 2600);
   }
-  hud.dbgShots.textContent = String(combat.stats.shots);
-  hud.dbgHits.textContent = String(combat.stats.hits);
-  hud.dbgFire.textContent = fireDebug;
-  hud.dbgKeys.textContent = String(input.keyEventCount);
+  // PERF-02: 缓存上一帧值，仅在变化时写入 DOM
+  if (combat.stats.shots !== _lastShots) {
+    _lastShots = combat.stats.shots;
+    hud.dbgShots.textContent = String(_lastShots);
+  }
+  if (combat.stats.hits !== _lastHits) {
+    _lastHits = combat.stats.hits;
+    hud.dbgHits.textContent = String(_lastHits);
+  }
+  if (fireDebug !== _lastFireDebug) {
+    _lastFireDebug = fireDebug;
+    hud.dbgFire.textContent = fireDebug;
+  }
+  if (input.keyEventCount !== _lastKeys) {
+    _lastKeys = input.keyEventCount;
+    hud.dbgKeys.textContent = String(_lastKeys);
+  }
 
   // 小地图每帧更新（只改一个 transform，开销可忽略）。
   // 不放进 0.35 秒采样块：那样箭头会一跳一跳，转身时尤其明显。
   try { updateMinimap(); } catch { /* 小地图绝不能把主循环带崩 */ }
+
+  // 全屏地图打开时同步玩家位置和朝向
+  try {
+    trackSeenBoxes();
+    if (game.mapOpen) updateFullscreenMap();
+  } catch { /* 地图更新不能崩主循环 */ }
 
   fpsAccum += dt; fpsFrames++;
   if (fpsAccum >= 0.35) {
@@ -2177,21 +2445,27 @@ function syncCarryHud() {
  */
 function interactLootContainer(container) {
   if (!container) return;
-  const session = openContainerSession(player.raidInventory, container);
-  if (!session) {
-    toast('无法打开容器', 1400);
+  
+  // 已开过的箱子：立即打开面板
+  if (container.opened) {
+    const session = openContainerSession(player.raidInventory, container);
+    if (!session) {
+      toast('无法打开容器', 1400);
+      return;
+    }
+    for (const item of session.items) {
+      if ((item?.slotKind ?? item?.kind) === 'blueprint') {
+        blueprintDropExclude.add(item.blueprintId ?? item.defId);
+      }
+    }
+    audio.pickup();
+    openRaidInventory();
+    syncCarryHud();
     return;
   }
-  // 本局已掉蓝图计入排除集：后续开的箱子不再掉同一张（避免局内重复掉落，
-  // 结算端虽幂等去重，但不生成无效重复物本身就是掉落通道的职责）。
-  for (const item of session.items) {
-    if ((item?.slotKind ?? item?.kind) === 'blueprint') {
-      blueprintDropExclude.add(item.blueprintId ?? item.defId);
-    }
-  }
-  audio.pickup();
-  openRaidInventory();
-  syncCarryHud();
+  
+  // 首次开箱：需要长按 E（撬锁）并发出噪音
+  game.searchTarget = container;
 }
 
 function interactOpenableFurniture(item) {
@@ -2207,6 +2481,14 @@ window.__game = {
   navigation, saveStore,
   quickWheel, raidInventoryView,
   throwGrenadeFromQuickUse,
+  /** 自动化验收入口：与 E/Tab 走同一函数，不另造捷径。 */
+  openRaidInventory, closeRaidInventory, interactLootContainer,
+  indicators, difficulty: D(),
+  /** 模拟按住 / 松开某个动作的物理键（keydown 的 repeat 事件会被 Input 忽略）。 */
+  holdKey: (code, down = true) => {
+    if (down) { input.keys.add(code); input.pressed.add(code); input.keyDownAt.set(code, performance.now()); }
+    else { input.keys.delete(code); input.released.add(code); input.releasedDuration.set(code, 1e9); input.keyDownAt.delete(code); }
+  },
   /** 批 3 接线急救包效果的回调注册表；未注册前 consumable 确认只提示不扣除。 */
   setOnUseConsumable: (fn) => { onUseConsumable = fn; },
 };

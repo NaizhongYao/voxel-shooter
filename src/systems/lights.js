@@ -45,7 +45,9 @@ export class EmergencyLights {
     const cfg = L();
     for (let i = 0; i < cfg.maxLit; i++) {
       const p = new THREE.PointLight(cfg.color, 0, cfg.distance, cfg.decay);
-      p.visible = false;
+      // PERF: 光源始终 visible，通过 intensity=0 关闭，避免 shader 重编译
+      p.visible = true;
+      p.intensity = 0;
       scene.add(p);
       this.pool.push(p);
     }
@@ -240,7 +242,8 @@ export class EmergencyLights {
     }
     this._showBrokenMesh(lamp);
     if (lamp.light) {
-      lamp.light.visible = false;
+      // PERF: 设置 intensity=0 而非 visible=false，保持光源池恒定
+      lamp.light.intensity = 0;
       lamp.light = null;
     }
     return true;
@@ -282,11 +285,14 @@ export class EmergencyLights {
     for (let i = 0; i < this.pool.length; i++) {
       const p = this.pool[i];
       const l = alive[i];
-      if (!l) { p.visible = false; continue; }
+      if (!l) {
+        // PERF: 用 intensity=0 替代 visible=false，保持光源数量恒定
+        p.intensity = 0;
+        continue;
+      }
       l.light = p;
       p.position.set(l.cx, l.cy, l.cz);
       p.intensity = cfg.intensity * l.level;
-      p.visible = l.level > 0.01;
     }
   }
 }
