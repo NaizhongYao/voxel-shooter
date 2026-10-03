@@ -45,8 +45,10 @@ export class Combat {
    */
   playerShoot(player, cam, weapon, now) {
     const aim = player.aimSolution(cam);
-    // 枪口被自己的掩体挡住 → 禁止开火（GDD 05 章）
-    if (aim.blocked) return false;
+    // 不再用「枪口 → 准星」辅助线拦截开火：第三人称下这条线很容易
+    // 穿过自己的肩膀、枪托或近处掩体，造成敌人在面前却完全打不出枪。
+    // 真正的子弹射线仍由 castBullet() 做墙体/敌人最近命中判定，打墙会停弹，
+    // 但不会把开火动作静默吞掉。
 
     // 先取散布，再 consume。consume() 会累加后坐抬枪，
     // 若顺序反了，每一发都会被自己的后坐打偏 ——

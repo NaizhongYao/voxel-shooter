@@ -2020,7 +2020,6 @@ function frame(nowMs) {
         fireDebug = ok ? 'FIRED'
           : weapon.reloading ? 'RELOADING'
           : weapon.isEmpty ? 'EMPTY'
-          : player.aimSolution(cam).blocked ? 'BLOCKED'
           : 'COOLDOWN';
       }
       const wasReloading = weapon.reloading;
@@ -2236,9 +2235,8 @@ function frame(nowMs) {
   lights.update(dt, player.pos.x, player.pos.y, player.pos.z);
   mesher.rebuildDirty();
 
-  // 准星阻挡提示
-  const aim = player.aimSolution(cam);
-  hud.crosshair.classList.toggle('blocked', aim.blocked);
+  // 准星只表达武器散布与受击，不再因为枪口辅助线偶发误判变红。
+  // 真正的墙体阻挡由子弹射线处理：开火动作不会被静默吞掉。
   // 受击 / 移动导致的准星扩散
   const spreadPx = 8 + (loadout.current
     ? loadout.current.currentSpread(player.spreadMultiplier) * 1.6 : 0)

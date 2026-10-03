@@ -361,6 +361,9 @@ export class Player {
     const { pos } = this.muzzle();
     const dir = new THREE.Vector3().subVectors(P, pos).normalize();
     const dist = pos.distanceTo(P);
+    // 这条辅助线只保留为诊断信息，不再作为开火门槛。
+    // 第三人称枪口位于肩侧，近处肩膀/枪托/掩体会让它偶发误判；
+    // 真正的子弹阻挡由 Combat.castBullet 的射线解决。
     const blocked = this.world.lineBlocked(pos.x, pos.y, pos.z, P.x, P.y, P.z)
       && dist > 0.6;
 
