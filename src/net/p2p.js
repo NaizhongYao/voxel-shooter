@@ -198,10 +198,18 @@ export class P2PHost {
       }
       // 同一个 send 闭包必须贯穿 join/receive：CoopRoom 用它识别“同一条连接”。
       peer.send = (m) => this._sendTo(p2p ? peer : null, m);
-      peer.member = room.join(
-        { id: /^[a-f0-9-]{36}$/.test(msg.id ?? '') ? msg.id : crypto.randomUUID(), token: crypto.randomUUID(), name: cleanName(msg.name) },
-        peer.send,
-      );
+      const uuid = (v) => (/^[a-f0-9-]{36}$/.test(v ?? '') ? v : null);
+      try {
+        peer.member = room.join(
+          { id: uuid(msg.id) ?? crypto.randomUUID(), token: uuid(msg.token) ?? crypto.randomUUID(), name: cleanName(msg.name) },
+          peer.send,
+        );
+      } catch (err) {
+        // 房间已满 / 战局已开始 / 凭据失效：必须让队友看到原因，不能静默卡住。
+        if (p2p) { this._sendTo(peer, { type: 'error', message: err.message }); p2p.close(); }
+        else console.error('[P2P] 房主入房失败', err);
+        return;
+      }
       return;
     }
     room.receive(peer.member.id, msg, peer.send);

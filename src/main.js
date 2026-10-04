@@ -881,6 +881,7 @@ function openBrief() {
     return;
   }
   if(coop?.room){
+    if(coop.dial){toast('直连模式：地图与房主页面一致，不能中途更换',2200);return;}
     if(coop.room.host!==coop.credentials?.id){toast('地图由房主统一选择',1800);return;}
     coop.send({type:'map',map:lv.id});return;
   }
@@ -2572,7 +2573,7 @@ coop = new CoopClient({
   onMessage: msg => {
     if (msg.type === 'room') {
       coopLobby.render(msg);
-      if (msg.map !== LEVEL.id) {
+      if (msg.map !== LEVEL.id && !coop.dial) {
         const url = new URL(location.href); url.searchParams.set('map', msg.map); url.searchParams.set('room', msg.code);
         coop.stop(false); location.href = url.href; return;
       }
@@ -2631,10 +2632,15 @@ coopRuntime = new CoopRuntime(coop, {
 });
 const inviteRoom = new URLSearchParams(location.search).get('room') ?? coopResume?.code;
 if (inviteRoom) {
-  coopLobby.code.value = inviteRoom;
-  if (coopResume?.code === inviteRoom) {
-    void coop.join(inviteRoom, coopResume.name).catch(err => coopLobby.showMessage(err.message));
-  } else coopLobby.showMessage('好友邀请已填好，输入呼号后点击「加入好友」');
+  const serverUsable = !!coop.endpoint && !/(^|\.)github\.io$/.test(location.hostname);
+  if (!serverUsable) {
+    try { sessionStorage.removeItem('pc.coop.session'); } catch { /* 忽略 */ }
+  } else {
+    coopLobby.code.value = inviteRoom;
+    if (coopResume?.code === inviteRoom) {
+      void coop.join(inviteRoom, coopResume.name).catch(err => coopLobby.showMessage(err.message));
+    } else coopLobby.showMessage('好友邀请已填好，输入呼号后点击「加入好友」');
+  }
 }
 
 requestAnimationFrame(frame);

@@ -27,7 +27,10 @@ export class CoopLobby {
       <div class="coop-room" hidden></div>`;
     this.name=this.root.querySelector('.coop-name');this.code=this.root.querySelector('.coop-code');
     this.message=this.root.querySelector('.coop-message');this.roomEl=this.root.querySelector('.coop-room');
-    this.p2pHost=new P2PHost();this.p2pConn=null;this.p2pCode=null;
+    this.p2pHost=new P2PHost();this.p2pConn=null;this.p2pCode=null;this.p2pInvites=[];this.p2pInviteOpen=false;this.p2pRole=null;
+    // 云端后端在国内不可达：GitHub Pages 只呈现直连模式（呼号输入保留，队友名字要有区别）。
+    this.serverUsable=!!client.endpoint&&!/(^|\.)github\.io$/.test(location.hostname);
+    if(!this.serverUsable){try{sessionStorage.removeItem('pc.coop.session');}catch{ /* 忽略 */ }}
     this.root.addEventListener('click',async(event)=>{
       const a=event.target.closest('[data-coop]')?.dataset.coop;if(!a)return;
       try {
@@ -42,7 +45,8 @@ export class CoopLobby {
           try {await navigator.clipboard.writeText(url.href);this.showMessage(`邀请链接已复制：${url.href}`);}
           catch {this.showMessage(`房间码 ${this.room.code} · 让队友打开 ${url.origin} 后输入房间码`);}
         }else if(a==='p2p-host')await this.p2pHostStart();
-        else if(a==='p2p-join'){this._box('join');this.showMessage('把房主发来的邀请链接粘贴到下面，再点「生成回答码」。');}
+        else if(a==='p2p-join'){this.p2pInviteOpen=true;this.root.querySelector('.coop-p2p').hidden=false;this._box('join');this.showMessage('把房主发来的邀请链接粘贴到下面，再点「生成回答码」。');}
+        else if(a==='p2p-new')await this.p2pHostStart();
         else if(a==='p2p-accept')await this.p2pHostAccept(this.root.querySelector('.p2p-answer').value);
         else if(a==='p2p-gen'||a==='p2p-copy-invite'||a==='p2p-copy-answer'){
           const field={ 'p2p-gen':'p2p-invite-in','p2p-copy-invite':'p2p-invite','p2p-copy-answer':'p2p-answer-out' }[a];
@@ -59,27 +63,39 @@ export class CoopLobby {
     this.root.addEventListener('change',e=>{if(e.target.matches('.coop-map'))this.callbacks.onMap?.(e.target.value);});
     document.querySelector('#missions-page')?.prepend(this.root);
     // 静态站点（GitHub Pages）：云端后端在国内不可达，只呈现直连模式；本机/局域网页面两种都能用。
-    const serverUsable=!!client.endpoint&&!/(^|\.)github\.io$/.test(location.hostname);
-    if(!serverUsable){
-      this.root.querySelector('.coop-connect').hidden=true;
+    if(!this.serverUsable){
+      const row=this.root.querySelector('.coop-connect');
+      row.querySelector('[data-coop="create"]').hidden=true;
+      row.querySelector('[data-coop="join"]').hidden=true;
+      row.querySelector('label:nth-of-type(2)').hidden=true; // 房间码输入（服务器模式专用）
       if(!p2pAvailable())this.showMessage('当前浏览器不支持直连（WebRTC），请用 Chrome/Edge 打开。');
-      else this.showMessage('点「创建直连房间」，把邀请链接发给队友（同一 WiFi）。');
+      else this.showMessage('先填呼号，再点「创建直连房间」，把邀请链接发给队友（同一 WiFi）。');
     }
     this._hashFlow();
     this.hud=document.createElement('aside');this.hud.className='coop-hud';this.hud.hidden=true;
     document.querySelector('#ui')?.append(this.hud);
   }
   _box(name,show=true){const el=this.root.querySelector(`.coop-p2p-box.${name}`);el.hidden=!show;return el;}
-  /** 房主：生成邀请链接。 */
+  /** 房主：生成（或补发）一张邀请链接。可重复点击以邀请第 3、4 位队友。 */
   async p2pHostStart(){
     this.trace('host-start');
     if(!p2pAvailable())throw new Error('当前浏览器不支持直连（WebRTC）');
-    this.client.stop(false); // 直连与服务器模式互斥，先收掉旧连接
-    this.p2pCode=this.p2pHost.ensureRoom();
-    this.p2pRole='host';
-    this.p2pConn=new CoopP2P({onOpen:()=>this._p2pConnected()});
-    const invite=await this.p2pConn.createInvite(this.p2pCode);
-    this.p2pHost.attachGuest(this.p2pConn);
+    const code=this.p2pHost.ensureRoom();
+    // 直连模式地图跟随房主当前页面（不能中途换图，否则队友关卡不一致）。
+    const pageMap=new URLSearchParams(location.search).get('map');
+    if(['blackhouse','clinic','radio'].includes(pageMap))this.p2pHost.room.map=pageMap;
+    this.p2pCode=code;this.p2pRole='host';this.p2pInviteOpen=true;
+    this.root.querySelector('.coop-p2p').hidden=false;
+    if(!this.client.dial){
+      // 房主必须先进房间：房里第一个人才是房主（否则先连上的队友会顶替房主身份）。
+      this.client.stop(false); // 直连与服务器模式互斥，先收掉旧连接
+      this.client.dial=()=>this.p2pHost.selfSocket();
+      await this.client.join(code,this.name.value).catch(err=>this.showMessage(err.message));
+    }
+    const conn=new CoopP2P({onOpen:()=>this._p2pConnected()});
+    this.p2pInvites.push(conn);this.p2pConn=conn;
+    const invite=await conn.createInvite(code);
+    this.p2pHost.attachGuest(conn);
     const link=`${location.origin}${location.pathname}?map=${this.p2pHost.room.map}#o=${invite}`;
     this.root.querySelector('.p2p-invite').value=link;
     this._box('invite');this._box('answer');
@@ -102,14 +118,21 @@ export class CoopLobby {
     this.showMessage('把「回答」发回给房主（复制后微信发过去）。你这边不用再操作，连上会自动进入房间。');
     try {await navigator.clipboard.writeText(answer);this.showMessage('回答已复制：发回给房主，连上后自动进入房间');} catch { /* 让玩家手动复制 */ }
   }
-  /** 房主：粘贴回答并完成连接。 */
+  /** 房主：粘贴回答并完成连接。同时有多张未完成邀请时，自动匹配对应的那一张。 */
   async p2pHostAccept(answer){
     this.trace('host-accept',String(answer??'').length);
-    if(!this.p2pConn)throw new Error('先点「创建直连房间」');
     if(!String(answer??'').trim())throw new Error('把队友发回的「回答」粘贴进来');
+    this.p2pInvites=this.p2pInvites.filter(c=>!c.closed);
+    if(!this.p2pInvites.length)throw new Error('先点「创建直连房间」生成邀请');
     this.showMessage('正在建立直连…');
-    await this.p2pConn.acceptAnswer(answer);
+    let done=false,lastError=null;
+    for(const conn of this.p2pInvites.slice()){
+      try {await conn.acceptAnswer(answer);this.p2pInvites=this.p2pInvites.filter(c=>c!==conn);done=true;break;}
+      catch(err){lastError=err;}
+    }
+    if(!done)throw new Error('这条回答与当前邀请不匹配：请让队友重新点最新链接，或重新点「创建直连房间」');
     this._box('answer',false);
+    this.showMessage('队友已接入。还要邀请别人就再点「邀请新队友」；人数齐了各自点「我准备好了」。');
   }
   /** P2P 通道已打开（双方都会走这里）：把它交给普通联机客户端，后续流程完全一致。 */
   _p2pConnected(){
@@ -147,15 +170,16 @@ export class CoopLobby {
     if(room.phase==='preparing')this.showMessage('全员准备完成，正在部署战局…');
     const id=this.client.credentials?.id,host=room.host===id,me=room.members.find(m=>m.id===id);
     this.root.querySelector('.coop-connect').hidden=true;
-    this.root.querySelector('.coop-p2p').hidden=true;
+    this.root.querySelector('.coop-p2p').hidden=!this.p2pInviteOpen;
     // 房主用 localhost 打开时，直接把队友该用的局域网地址摆在最显眼处。
     const loopback=['localhost','127.0.0.1','::1','[::1]'].includes(location.hostname);
     const shareLan=!this.client.dial&&loopback&&this.client.lanHost?`http://${this.client.lanHost}:${location.port||8787}/`:null;
-    this.roomEl.innerHTML=`<div class="coop-room-top"><span>房间 <strong>${escape(room.code)}</strong></span>${this.client.dial?'':`<button data-coop="copy">复制邀请链接</button>`}<button data-coop="leave">离开房间</button></div>
+    const canInvite=!!this.client.dial&&host&&room.phase==='lobby'&&room.members.length<4;
+    this.roomEl.innerHTML=`<div class="coop-room-top"><span>房间 <strong>${escape(room.code)}</strong></span>${canInvite?`<button data-coop="p2p-new">邀请新队友</button>`:''}${this.client.dial?'':`<button data-coop="copy">复制邀请链接</button>`}<button data-coop="leave">离开房间</button></div>
       ${shareLan?`<p class="coop-note">队友（同一 WiFi）打开：<code>${shareLan}</code> 并输入房主给的房间码即可加入。</p>`:''}
-      ${this.client.dial?`<p class="coop-note">直连模式：队员要加入请让他刷新页面后点房主新发的邀请链接（每条邀请只能用一次）。</p>`:''}
+      ${this.client.dial?`<p class="coop-note">直连模式：点「邀请新队友」生成链接发给对方（每条邀请只能用一次，最多 4 人）。</p>`:''}
       <div class="coop-roster">${room.members.map((m,i)=>`<div class="coop-member ${m.ready?'ready':''}"><span class="coop-number">0${i+1}</span><b>${escape(m.name)}${m.id===id?' · 你':''}</b><small>${!m.connected?'断线保留中':m.id===room.host?'房主':'队员'} · ${m.ready?'已准备':'整备中'}</small></div>`).join('')}${Array.from({length:4-room.members.length},()=>'<div class="coop-member empty">等待队友加入</div>').join('')}</div>
-      <div class="coop-actions"><label>行动区域 <select class="coop-map" ${!host||room.phase!=='lobby'?'disabled':''}>${[['blackhouse','黑楼'],['clinic','废弃诊所'],['radio','废弃电台']].map(([v,n])=>`<option value="${v}" ${v===room.map?'selected':''}>${n}</option>`).join('')}</select></label>
+      <div class="coop-actions"><label>行动区域 <select class="coop-map" ${(!host||room.phase!=='lobby'||this.client.dial)?'disabled':''}>${[['blackhouse','黑楼'],['clinic','废弃诊所'],['radio','废弃电台']].map(([v,n])=>`<option value="${v}" ${v===room.map?'selected':''}>${n}</option>`).join('')}</select></label>
       <button data-coop="kit" ${room.phase!=='lobby'?'disabled':''}>调整装备</button><button data-coop="ready" ${room.phase!=='lobby'?'disabled':''}>${me?.ready?'取消准备':'我准备好了'}</button>
       ${host?`<button class="primary" data-coop="start" ${room.members.length<2||room.members.some(m=>!m.ready||!m.connected)||room.phase!=='lobby'?'disabled':''}>全员出发</button>`:''}</div>
       <p class="coop-note">房主离线不终止战局。战利品先拿先得，空手也可撤离；各自仓库独立结算。</p>`;
@@ -166,9 +190,9 @@ export class CoopLobby {
       snapshot.players.map(p=>`<div><b>${escape(p.name)}</b><span>${p.status==='extracted'?'已撤离':p.status==='dead'?'阵亡':`${p.hp} HP · ${p.armor} 甲`}</span></div>`).join('');
   }
   reset(){this.trace('reset');
-    this.room=null;this.roomEl.hidden=true;this.root.querySelector('.coop-connect').hidden=!this.client.endpoint;this.root.querySelector('.coop-p2p').hidden=false;
+    this.room=null;this.roomEl.hidden=true;this.root.querySelector('.coop-connect').hidden=!this.serverUsable;this.root.querySelector('.coop-p2p').hidden=false;
     for(const b of this.root.querySelectorAll('.coop-p2p-box'))b.hidden=true;
-    this.p2pConn=null;this.p2pCode=null;this.p2pHost.dispose();this.p2pHost=new P2PHost();
+    this.p2pConn=null;this.p2pCode=null;this.p2pInvites=[];this.p2pInviteOpen=false;this.p2pRole=null;this.p2pHost.dispose();this.p2pHost=new P2PHost();
     this.client.dial=null;
     this.hud.hidden=true;this.showMessage('已离开房间，可以继续单人行动。');}
 }

@@ -36,8 +36,10 @@ export class CoopClient {
     code=String(code).trim().toUpperCase();if(!validCode(code))throw new Error('请输入 6 位房间码');
     this.stop(false);this.room=null;this.stopped=false;this.code=code;this.name=name;this.retries=0;
     let saved;try{saved=JSON.parse(this.storage.getItem('pc.coop.session')||'null');}catch{}
-    // P2P 会话不可用刷新恢复（信令是一次性的），绝不复用旧凭据。
-    this.credentials=!this.dial&&saved?.code===code&&saved.endpoint===this.endpoint?saved:null;
+    // P2P：刷新恢复做不到（信令一次性），但同一页面内重新加入同一房间要沿用旧凭据，才能拿回原座位而不是变成两个人。
+    this.credentials=this.dial
+      ? (this.credentials?.code===code?this.credentials:null)
+      : (saved?.code===code&&saved.endpoint===this.endpoint?saved:null);
     if(!this.credentials){this.seq=0;this.actionId=0;}
     return new Promise((resolve,reject)=>{this.joinResolve=resolve;this.joinReject=reject;this.connect();});
   }
