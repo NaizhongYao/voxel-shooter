@@ -99,7 +99,7 @@ export const WEAPONS = {
  */
 export const HITBOX_MULT = { head: 3.0, torso: 1.0, limb: 0.7 };
 
-function applyWeaponModifiers(spec, modifiers) {
+export function applyWeaponModifiers(spec, modifiers) {
   return {
     ...spec,
     damage: spec.damage + (modifiers.damage ?? 0),

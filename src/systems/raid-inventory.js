@@ -21,6 +21,7 @@ import {
   createInventory,
   effectiveArmorId,
   grenadeStackMax,
+  sameStackOrigin,
 } from './inventory.js';
 
 export const QUICK_USE_SLOT_COUNT = 5;
@@ -732,7 +733,7 @@ export function seedQuickUseGrenade(raidInventory, grenadeId, quantity, index = 
   const seeded = ItemInstance('grenade', grenadeId, {
     quantity: Math.max(0, Math.floor(quantity ?? 0)),
     stackMax: Math.max(1, Math.floor(quantity ?? 1)),
-    payload: { raidOrigin: 'loadout' },
+    payload: { raidOrigin: 'loadout', originId: `issued-${grenadeId}` },
   });
   raidInventory.quickUse[index] = seeded.quantity > 0 ? seeded : null;
   return { ok: true, item: raidInventory.quickUse[index] };
@@ -902,7 +903,7 @@ export function moveToSlot(raidInventory, fromRef, toRef, options = {}) {
   }
 
   // ② 同种可堆叠：合并
-  const sameStack = itemKind(target) === itemKind(moving) && target.defId === moving.defId;
+  const sameStack = itemKind(target) === itemKind(moving) && target.defId === moving.defId && sameStackOrigin(target, moving);
   const max = cellStackMax(raidInventory, to, target);
   if (sameStack && max > 1) {
     const room = max - Math.max(1, Math.floor(target.quantity ?? 1));

@@ -246,8 +246,13 @@ export function canAccept(slotKind, item) {
  *
  * @returns {number} a 能吸收的 b 数量；0 = 拒绝（不同种 / 满格 / 不可堆叠）。
  */
+export function sameStackOrigin(a, b) {
+  const origin = it => it?.payload?.raidOrigin === 'loadout' ? (it.payload.originId ?? it.instanceId) : null;
+  return origin(a) === origin(b);
+}
+
 export function tryStack(a, b) {
-  if (!a || !b) return 0;
+  if (!a || !b || !sameStackOrigin(a, b)) return 0;
   if (_itemKind(a) !== _itemKind(b) || a.defId !== b.defId) return 0;
   const max = a.stackMax ?? 1;
   if (max <= 1) return 0;
@@ -343,7 +348,7 @@ export function autoPlace(inventory, item) {
     // 第 2 步：同 defId 的格子逐格填满。「同 defId」天然实现不同种手雷不共格。
     for (const slot of container) {
       if (remaining <= 0) break;
-      if (!slot || slot.defId !== item.defId) continue;
+      if (!slot || slot.defId !== item.defId || !sameStackOrigin(slot, item)) continue;
       const sm = _stackMaxOf(slot, armorId);
       const room = sm - (slot.quantity ?? 1);
       if (room <= 0) continue;

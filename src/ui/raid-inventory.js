@@ -642,6 +642,10 @@ export class RaidInventoryView {
     const to = target ? this.cellRef(target) : null;
     if (!to) return;
     const quantity = d.split ? Math.floor((d.item.quantity ?? 1) / 2) : undefined;
+    if (this.options.remoteAction?.()) {
+      this.options.remoteAction('drag', null, { from: d.from, to, quantity, instanceId: d.item.instanceId });
+      return;
+    }
     const result = moveToSlot(this.player?.raidInventory, d.from, to,
       quantity === undefined ? {} : { quantity });
     if (result?.ok) {
@@ -806,6 +810,12 @@ export class RaidInventoryView {
       if (typeof this.options.onCloseRequest === 'function') this.options.onCloseRequest();
       else this.close();
       return { ok: true, closed: true };
+    }
+    if (this.options.remoteAction?.()) {
+      const item = this.getSelectedItem();
+      return this.options.remoteAction(action, this.selected, {
+        quantity: this.splitAmount ?? Math.floor((item?.quantity ?? 1) / 2),
+      });
     }
     const raid = this.player?.raidInventory ?? null;
     if (action === 'take-all') return this.takeAll();

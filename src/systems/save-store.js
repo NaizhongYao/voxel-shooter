@@ -239,7 +239,7 @@ export class SaveStore {
    * 初始化：读取 localStorage，校验，处理 pendingRaid
    * @returns {object} { ok, profile, warning }
    */
-  init() {
+  init(options = {}) {
     // 1. 读取档案
     const rawProfile = localStorage.getItem(STORAGE_KEY_PROFILE);
     
@@ -288,6 +288,12 @@ export class SaveStore {
       try {
         const pending = deserializeJson(rawPending);
         
+        if (pending.status === 'active' && pending.loadout?.coop
+            && options.resumeCoop?.room === pending.loadout.coop.room
+            && options.resumeCoop?.id === pending.loadout.coop.playerId) {
+          this.pendingRaid = pending;
+          return { ok: true, profile: this.profile, warning: '正在恢复联机战局，请等待服务器确认' };
+        }
         if (pending.status === 'active') {
           // 任务中异常退出，按放弃/阵亡处理
           warning = `Unfinished raid detected (${pending.raidId}). Risk items lost.`;
@@ -637,6 +643,19 @@ export class SaveStore {
       settlement.stats.died = true;
     }
 
+    if (pending?.loadout?.coop && outcome.success && Array.isArray(outcome.returnedRiskItems)) {
+      const untouched = new Set(Array.isArray(outcome.untrackedRiskIds) ? outcome.untrackedRiskIds : []);
+      settlement.returnedItems = Object.keys(pending.riskedItems).filter(id => untouched.has(id));
+      for (const raw of outcome.returnedRiskItems) {
+        const original = pending.riskedItems[raw?.instanceId];
+        if (!original || raw.defId !== (original.defId ?? original.itemId)) continue;
+        const it = cloneData(original);
+        it.quantity = Math.min(original.quantity ?? 1, Math.max(0, Math.floor(raw.quantity ?? 0)));
+        if (!it.quantity) continue;
+        if (it.slotKind === 'weapon') it.payload = { ...(it.payload ?? {}), ammo: raw.payload?.ammo, reserve: raw.payload?.reserve };
+        settlement.gainedItems.push(it);
+      }
+    }
     settlement.stats.enemiesKilled = outcome.enemiesKilled || 0;
     return settlement;
   }

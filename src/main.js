@@ -1,4 +1,7 @@
 import * as THREE from 'three';
+import { CoopClient } from './net/client.js';
+import { CoopRuntime } from './net/runtime.js';
+import { CoopLobby } from './ui/coop-lobby.js';
 import { RENDER, LIGHT, PLAYER, WORLD, PALETTE, GRENADE, INPUT, EXTRACTION, LOOT_SEARCH, grenadeInventory } from './config.js';
 import { D } from './difficulty.js';
 import { LEVELS, getLevel, countEnemies } from './level/index.js';
@@ -57,7 +60,13 @@ const $ = (id) => document.getElementById(id);
  *   - ok=false: 档案损坏，需要提示玩家重置
  */
 const saveStore = getSaveStore();
-const saveInitResult = saveStore.init();
+let coopResume = null;
+try { coopResume = JSON.parse(sessionStorage.getItem('pc.coop.session') || 'null'); } catch {}
+const saveInitResult = saveStore.init({ resumeCoop: coopResume ? { room: coopResume.code, id: coopResume.id } : null });
+let coop = null;
+let coopRuntime = null;
+let coopLobby = null;
+let coopPendingOutcome = null;
 
 if (!saveInitResult.ok) {
   // 档案损坏，显示错误并禁止继续
@@ -622,6 +631,7 @@ function handleQuickUseConfirm(index) {
     setQuickUseSelectedIndex(player.raidInventory, index);
     throwGrenadeFromQuickUse(index);
   } else if (item.slotKind === 'consumable') {
+    if(coopRuntime?.active){void coopRuntime.action({type:'inventory',action:'use',sel:{container:'quickUse',index},revision:coopRuntime.revision});return;}
     // 只有真实使用成功才同步选中；未接入使用回调时「确认」只是提示，
     // 不能把空确认当成成功。
     const used = useConsumableFromQuickUse(index);
@@ -667,6 +677,10 @@ function throwGrenadeItem(item) {
  * 也不双维护 game.nades。
  */
 function throwGrenadeFromQuickUse(index) {
+  if (coopRuntime?.active) {
+    void coopRuntime.action({ type: 'grenade', index });
+    return { ok: true, pending: true };
+  }
   const grenadeName = player.raidInventory?.quickUse?.[index]?.name ?? '手雷';
   const result = attemptGrenadeThrow(player.raidInventory, index, throwGrenadeItem);
   if (result.ok) {
@@ -698,9 +712,15 @@ function throwGrenadeFromQuickUse(index) {
  */
 const raidInventoryView = createRaidInventoryView(player, loadout, {
   root: hud.raidInventory,
+  remoteAction: (action, sel, extra) => {
+    if (!coopRuntime?.active) return false;
+    if (!action) return true;
+    return coopRuntime.inventory(action, sel, extra);
+  },
   throwGrenadeItem,
   onCloseRequest: () => closeRaidInventory(),
   onActionResult: (result) => {
+    if (result?.pending) return;
     if (!result?.ok) {
       toast(result?.reason ?? '该操作不可用', 1400);
       return;
@@ -758,6 +778,7 @@ function closeRaidInventory(options = {}) {
     try { canvas.requestPointerLock()?.catch?.(() => {}); }
     catch { /* 等下一次点击 */ }
   }
+  if (coopRuntime?.active) void coopRuntime.action({ type: 'close-container' });
 }
 
 // ── 任务选择屏 ──────────────────────────────────────────────────────
@@ -858,6 +879,10 @@ function openBrief() {
   if (!lv || lv.locked) {
     toast('该档案尚未解密', 1200);
     return;
+  }
+  if(coop?.room){
+    if(coop.room.host!==coop.credentials?.id){toast('地图由房主统一选择',1800);return;}
+    coop.send({type:'map',map:lv.id});return;
   }
   pendingLevel = lv;
   openTaskBrief();
@@ -1104,7 +1129,7 @@ drawLoadoutVisuals();
 initEquipmentUI();
 
 // 装备页只负责返回简报或提交开战；主流程由这里统一切换。
-window.addEventListener('equipment-back-brief', () => openTaskBrief(briefPage));
+window.addEventListener('equipment-back-brief', () => coop?.room ? showCoopLobby() : openTaskBrief(briefPage));
 window.addEventListener('equipment-start', startMission);
 window.addEventListener('loadout-changed', () => {
   markLoadoutCards();
@@ -1122,6 +1147,15 @@ fillBriefTexts();
 
 function startMission() {
   if (game.started) return;
+  audio.init();
+  if (coop?.room) {
+    if(coop.room.phase!=='lobby'){toast('战局已开始，请等待同步',1800);return;}
+    loadoutManager.syncLoadoutFromInventory();
+    hideEquipment(); hud.brief.style.display = 'none'; hud.missions.style.display = 'flex';
+    coop.send({ type: 'ready', ready: true, kit: coopKit() });
+    coopLobby.showMessage('装备已确认，等待房主统一出发');
+    return;
+  }
   // 玩家在简报里换了关卡（原地切换没重载）——现在才真正重载。
   // 整个世界（玩家/敌人/门/拾取物）都在模块初始化时按 LEVEL 建好，
   // 运行时热切换会留下混合状态，所以这里 reload，而不是就地重建世界。
@@ -1183,12 +1217,11 @@ function startMission() {
   if (!beginRaid(loadoutData)) return;
 
   game.started = true;
-  // 跳简报（R 重开）路径也会走到这里 —— 任务选择屏同样要关掉，
-  // 否则游戏已经在跑了，选择屏还盖在上面挡视线挡点击。
-  // 重开/重载后绝不能残留局内背包面板（若前一次开场前被误开）；
-  // 容器会话一并清理 —— 新一局没有上一局开着的箱子。
   closeRaidInventory({ silent: true });
   closeContainerSession(player.raidInventory);
+  // 跳简报（R 重开）路径也会走到这里 —— 任务选择屏同样要关掉，
+  // 否则游戏已经在跑了，选择屏还盖在上面挡视线挡点击。
+  // 重开/重载后绝不能残留局内背包面板（若前一次开场前被误开）。
   hud.brief.style.display = 'none';
   if (hud.missions) hud.missions.style.display = 'none';
   if (hud.equipment) hideEquipment();  // 也要关掉装备面板
@@ -1241,6 +1274,7 @@ function beginRaid(loadoutData) {
 hud.briefGo.addEventListener('click', openEquipmentFromBrief);
 window.addEventListener('keydown', (e) => {
   if (game.started) return;
+  if (e.target?.closest?.('.coop-lobby')) return;
 
   // 任务选择屏：方向键选档案，Enter 进入简报
   if (hud.missions && hud.missions.style.display !== 'none') {
@@ -1289,14 +1323,14 @@ try {
 if (resumeStart) {
   const matches = resumeStart.map === LEVEL.id;
   sessionStorage.removeItem(pendingStartKey);
-  if (matches) startMission();
+  if (matches && !coopResume) startMission();
   else toast('任务参数未能同步，请重新选择任务', 2200);
 }
 
 /** 死亡后按 R 重开继续跳过简报。 */
 if (sessionStorage.getItem('skipBrief') === '1') {
   sessionStorage.removeItem('skipBrief');
-  startMission();
+  if (!coopResume) startMission();
 }
 
 // 选择屏渲染顺序：先建卡片，再定初始选中项（已解锁关卡）
@@ -1567,6 +1601,8 @@ function toSaveStoreOutcome(settle, clearBonus) {
 }
 
 function endGame(won) {
+  quickWheel.close();
+  if (coopRuntime?.active && !coopPendingOutcome) return;
   // 终局瞬间收起轮盘与局内背包：结算横幅不能盖在残留的双环或面板下
   // （撤离判定时玩家可能正握着 Q 或开着 Tab）。close 不触发回调。
   // 容器会话清理：结算只读 player.carriedLoot 视图，容器剩余物不入结算。
@@ -1625,7 +1661,7 @@ function endGame(won) {
   };
   try {
     const settleResult = saveStore.settleRaid(
-      toSaveStoreOutcome(settlePayload, game.clearBonus)
+      coopPendingOutcome ?? toSaveStoreOutcome(settlePayload, game.clearBonus)
     );
     if (!settleResult?.ok) {
       console.error('[Main] settleRaid 失败:', settleResult?.error ?? 'no result');
@@ -1729,6 +1765,10 @@ function showWeaponSwapChoice(pickup) {
 function chooseWeaponSwapSlot(targetSlot) {
   if (!pendingWeaponSwap) return;
   const pickup = pendingWeaponSwap;
+  if(coopRuntime?.active){
+    void coopRuntime.action({type:'pickup',id:pickup.netId,slot:targetSlot});
+    closeWeaponSwapChoice();return;
+  }
   const result = pickups.takeWeaponToSlot(pickup, loadout, player, performance.now() / 1000, targetSlot);
   if (result.ok) {
     audio.pickup();
@@ -1800,6 +1840,12 @@ function frame(nowMs) {
   const dt = Math.min(0.05, (nowMs - last) / 1000);
   last = nowMs;
   const now = nowMs / 1000;
+  if (coopRuntime?.active) {
+    coopRuntime.frame(dt, nowMs);
+    input.endFrame();
+    requestAnimationFrame(frame);
+    return;
+  }
 
   /**
    * 简报阶段：只渲染，不推进任何游戏逻辑。
@@ -2471,10 +2517,130 @@ function interactOpenableFurniture(item) {
   toast(`${openableFurniture.label(item)}${open ? '已打开 · 已搜查' : '已关闭'}`, 900);
 }
 
+function coopKit() {
+  const data = loadoutManager.export();
+  const inv=loadoutManager.getInventory();
+  return { ...data, risked:loadoutManager.collectRiskInstanceIds(),
+    primaryIds:(inv?.primary??[]).map(it=>it?.instanceId??null),
+    supplies:[...(inv?.grenade??[]),...(inv?.misc??[])].filter(Boolean),
+    primary: (inv?.primary ?? []).map(it => it ? {
+    defId: it.defId, ammo: it.payload?.ammo, reserve: it.payload?.reserve,
+  } : null) };
+}
+function showCoopLobby() {
+  hideEquipment(); hud.brief.style.display = 'none'; hud.missions.style.display = 'flex';
+}
+function enterCoop() {
+  document.body.classList.add('coop-active');
+  if (hud.missions.style.display !== 'none') showCoopLobby();
+  hud.missions.style.display = 'none'; hud.brief.style.display = 'none';
+  if (hud.equipment?.classList.contains('active')) hideEquipment();
+  hud.minimap.classList.toggle('off', !minimapOn);
+}
+function coopPendingMatches(raidId) {
+  const pending=saveStore.getPendingRaid();
+  return !!(pending?.loadout?.coop && pending.loadout.coop.room===coop?.code
+    && pending.loadout.coop.raidId===raidId);
+}
+function settleCoop(outcome) {
+  const pending=saveStore.getPendingRaid();
+  if (pending?.loadout?.coop && pending.loadout.coop.room===coop?.code
+      && pending.loadout.coop.raidId===outcome?.raidId) {
+    coopPendingOutcome = outcome;
+    if (saveStore.getPendingRaid()) endGame(outcome.success);
+  } else if (!pending) {
+    game.over = true; game.won = outcome.success;
+  }
+}
+function cancelCoopStart(reason, raidId=coop?.room?.raidId) {
+  if (raidId && coopPendingMatches(raidId)) {
+    const result=saveStore.settleRaid({
+      raidId, success:true, extracted:false, carriedLoot:[],
+      returnedRiskItems:[], untrackedRiskIds:Object.keys(saveStore.getPendingRaid()?.riskedItems??{}),
+    });
+    if (!result?.ok && !result?.duplicate) toast('出发已取消，但本地存档暂未写入 · 将在重连时重试', 2600);
+  }
+  coopLobby.showMessage(reason);
+}
+coop = new CoopClient({
+  getRecovery: () => {
+    const pending = saveStore.getPendingRaid();
+    const recovery = pending?.loadout?.coop;
+    return recovery?.room === coop?.code && recovery?.raidId ? { raidId: recovery.raidId } : null;
+  },
+  onStatus: status => coopLobby?.setStatus(status),
+  onMessage: msg => {
+    if (msg.type === 'room') {
+      coopLobby.render(msg);
+      if (msg.map !== LEVEL.id) {
+        const url = new URL(location.href); url.searchParams.set('map', msg.map); url.searchParams.set('room', msg.code);
+        coop.stop(false); location.href = url.href; return;
+      }
+      pendingLevel = LEVEL;
+    } else if (msg.type === 'prepare') {
+      const pending = saveStore.getPendingRaid();
+      const data = { ...loadoutManager.export(), coop: { room: coop.code, playerId: coop.credentials.id, raidId: msg.raidId } };
+      const ok = pending?.loadout?.coop?.raidId === msg.raidId
+        || !!saveStore.startRaid(LEVEL.id, D().id, data, loadoutManager.collectRiskInstanceIds());
+      coop.send({ type: 'commit', raidId: msg.raidId, ok: !!ok });
+    } else if (msg.type === 'cancel-start') cancelCoopStart(msg.reason, msg.raidId);
+    else if (msg.type === 'raid-recovery') {
+      if (msg.status === 'cancelled') {
+        cancelCoopStart(msg.reason ?? '上次出发已取消', msg.raidId);
+      } else if (msg.status === 'aborted') {
+        if (msg.outcome) settleCoop(msg.outcome);
+        else cancelCoopStart(msg.reason ?? '上次战局已终止', msg.raidId);
+      }
+    } else if (msg.type === 'aborted') {
+      if (msg.outcome && saveStore.getPendingRaid()) saveStore.settleRaid(msg.outcome);
+      else cancelCoopStart(msg.reason);
+      coop.stop(); coop.room = null; coopLobby.reset(); coopLobby.showMessage(msg.reason); game.started = false; showCoopLobby();
+    } else if (msg.type === 'snapshot') coopRuntime.receive(msg.data);
+    else if (msg.type === 'error') { coopLobby.showMessage(msg.message); toast(msg.message, 3000); }
+  },
+});
+coopLobby = new CoopLobby(coop, {
+  onReady: () => {
+    loadoutManager.syncLoadoutFromInventory();
+    const me = coop.room?.members.find(m => m.id === coop.credentials?.id);
+    audio.init();
+    coop.send({ type: 'ready', ready: !me?.ready, kit: coopKit() });
+  },
+  onMap: map => coop.send({ type: 'map', map }),
+  onOpenKit: () => { hud.missions.style.display = 'none'; showEquipment(); },
+  onLeave: () => {
+    if (coopRuntime?.active) return;
+    if(saveStore.getPendingRaid()?.loadout?.coop)saveStore.settleRaid({success:false,extracted:false,carriedLoot:[]});
+    coop.send({ type: 'leave' }); coop.stop(); coop.room = null; coopLobby.reset();
+    const url = new URL(location.href); url.searchParams.delete('room'); history.replaceState(null, '', url);
+  },
+});
+coopRuntime = new CoopRuntime(coop, {
+  player, cam, game, input, world, scene, renderer, mesher, loadout, doors, pickups, lootContainers, openableFurniture,
+  flashlight, flashPool, effects, audio, combat, enemies, indicators, enemyLights, lights, quickWheel,
+  raidInventoryView, hud, hudRoot: $('ui'), spawn: SPAWN, lobby: coopLobby,
+  enter: enterCoop, onResult: settleCoop, toast, showWeaponSwap:showWeaponSwapChoice,
+  swapping:()=>!!pendingWeaponSwap, closeWeaponSwap:closeWeaponSwapChoice, chooseWeaponSwap:chooseWeaponSwapSlot,
+  openInventory: openRaidInventory, closeInventory: closeRaidInventory,
+  syncVitals: syncVitalsHud, syncCarry: syncCarryHud, updateWeapon: updateWeaponHud,
+  updateMap: () => { updateMinimap(); if (game.mapOpen) updateFullscreenMap(); },
+  toggleMap: () => setFullscreenMap(!game.mapOpen),
+  toggleMinimap: () => { minimapOn = !minimapOn; hud.minimap.classList.toggle('off', !minimapOn); },
+  wheelItems: quickUseWheelItems,
+  throwGrenade: () => throwGrenadeFromQuickUse(getQuickUseSelectedIndex(player.raidInventory)),
+});
+const inviteRoom = new URLSearchParams(location.search).get('room') ?? coopResume?.code;
+if (inviteRoom) {
+  coopLobby.code.value = inviteRoom;
+  if (coopResume?.code === inviteRoom) {
+    void coop.join(inviteRoom, coopResume.name).catch(err => coopLobby.showMessage(err.message));
+  } else coopLobby.showMessage('好友邀请已填好，输入呼号后点击「加入好友」');
+}
+
 requestAnimationFrame(frame);
 
 window.__game = {
-  world, player, cam, flashlight, scene, renderer, mesher,
+  coop, coopRuntime, world, player, cam, flashlight, scene, renderer, mesher,
   enemies, combat, loadout, pickups, lootContainers, openableFurniture, game, effects, doors, lights,
   navigation, saveStore,
   quickWheel, raidInventoryView,
