@@ -2,8 +2,17 @@ import { NET_VERSION, BUILD_ID, encode, decode, validCode } from './protocol.js'
 import { COOP_SERVER_URL } from './config.js';
 
 export function serverURL(locationLike = location) {
-  const local=['localhost','127.0.0.1','::1','[::1]'].includes(locationLike.hostname);
-  return COOP_SERVER_URL || (local?`${locationLike.protocol}//${locationLike.hostname}:8787`:'');
+  const host=locationLike.hostname;
+  const local=['localhost','127.0.0.1','::1','[::1]'].includes(host);
+  // 局域网/本机：直接连当前页面主机的同端口后端（server/local.mjs 同时提供网页与 WebSocket），
+  // 不依赖公网服务，也不受 Cloudflare 线路影响。
+  const lan=/^(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/.test(host);
+  if(local||lan){
+    // 网页由本机后端提供时端口相同（默认 8787）；静态开发服务器 8765 例外，后端固定在 8787。
+    const port=locationLike.port&&locationLike.port!=='8765'?locationLike.port:'8787';
+    return `${locationLike.protocol}//${host}:${port}`;
+  }
+  return COOP_SERVER_URL;
 }
 export class CoopClient {
   constructor({endpoint=serverURL(),storage=sessionStorage,onMessage=()=>{},onStatus=()=>{},getRecovery=()=>null}={}) {
