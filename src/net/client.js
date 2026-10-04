@@ -15,8 +15,10 @@ export function serverURL(locationLike = location) {
   return COOP_SERVER_URL;
 }
 export class CoopClient {
-  constructor({endpoint=serverURL(),storage=sessionStorage,onMessage=()=>{},onStatus=()=>{},getRecovery=()=>null}={}) {
+  constructor({endpoint=serverURL(),storage=sessionStorage,onMessage=()=>{},onStatus=()=>{},getRecovery=()=>null,dial=null}={}) {
     this.endpoint=endpoint.replace(/\/$/,'');this.storage=storage;this.getRecovery=getRecovery;this.onMessage=onMessage;this.onStatus=onStatus;
+    // dial：P2P 直连时由外部提供一个 WebSocket 形状的数据通道；为 null 时按普通 WebSocket 连服务器。
+    this.dial=dial;
     this.ws=null;this.credentials=null;this.room=null;this.seq=0;this.actionId=0;this.pending=new Map();
     this.rtt=0;this.lastMessage=0;this.retries=0;this.stopped=true;this.connected=false;this.timer=null;this.heartbeat=null;
   }
@@ -30,21 +32,30 @@ export class CoopClient {
     return this.join(data.code,name);
   }
   join(code,name) {
-    if(!this.endpoint)throw new Error('联机服务尚未部署');
+    if(!this.endpoint&&!this.dial)throw new Error('联机服务尚未部署');
     code=String(code).trim().toUpperCase();if(!validCode(code))throw new Error('请输入 6 位房间码');
     this.stop(false);this.room=null;this.stopped=false;this.code=code;this.name=name;this.retries=0;
     let saved;try{saved=JSON.parse(this.storage.getItem('pc.coop.session')||'null');}catch{}
-    this.credentials=saved?.code===code&&saved.endpoint===this.endpoint?saved:null;
+    // P2P 会话不可用刷新恢复（信令是一次性的），绝不复用旧凭据。
+    this.credentials=!this.dial&&saved?.code===code&&saved.endpoint===this.endpoint?saved:null;
     if(!this.credentials){this.seq=0;this.actionId=0;}
     return new Promise((resolve,reject)=>{this.joinResolve=resolve;this.joinReject=reject;this.connect();});
   }
   connect() {
     if(this.stopped)return;
     this.onStatus(this.retries?'reconnecting':'connecting');
-    const url=new URL(`${this.endpoint}/rooms/${this.code}/ws`);url.protocol=url.protocol==='https:'?'wss:':'ws:';
-    const ws=new WebSocket(url);this.ws=ws;
-    const timeout=setTimeout(()=>{if(!this.connected)ws.close();},8000);
+    let ws;
+    if(this.dial){ws=this.dial();}
+    else {
+      const url=new URL(`${this.endpoint}/rooms/${this.code}/ws`);url.protocol=url.protocol==='https:'?'wss:':'ws:';
+      ws=new WebSocket(url);
+    }
+    this.ws=ws;
+    // P2P 数据通道不做 8 秒建连超时：超时路径会真正关闭通道，把即将完成的握手毁掉。
+    const timeout=this.dial?0:setTimeout(()=>{if(!this.connected)ws.close();},8000);
       ws.onopen=()=>this.send({type:'hello',version:NET_VERSION,build:BUILD_ID,name:this.name,id:this.credentials?.id,token:this.credentials?.token,recovery:this.getRecovery?.()??undefined});
+    // P2P 数据通道可能在接管前就已打开：补发一次 open，让 hello 正常发出。
+    if(ws.readyState===1)queueMicrotask(()=>ws.onopen?.());
 
     ws.onmessage=(event)=>{
       if(ws!==this.ws)return;
@@ -53,7 +64,7 @@ export class CoopClient {
       if(msg.type==='welcome'){
         clearTimeout(timeout);this.connected=true;this.retries=0;this.seq=Math.max(this.seq,msg.seq??0);this.actionId=Math.max(this.actionId,msg.actionId??0);
         this.credentials={id:msg.id,token:msg.token,code:msg.code,endpoint:this.endpoint,name:this.name};
-        this.storage.setItem('pc.coop.session',JSON.stringify(this.credentials));
+        if(!this.dial)this.storage.setItem('pc.coop.session',JSON.stringify(this.credentials));
         this.onStatus('connected');this.joinResolve?.(msg);this.joinResolve=null;this.joinReject=null;
         clearInterval(this.heartbeat);this.heartbeat=setInterval(()=>{
           if(performance.now()-this.lastMessage>75000){ws.close();return;}
@@ -73,6 +84,8 @@ export class CoopClient {
       this.connected=false;clearInterval(this.heartbeat);
       for(const p of this.pending.values()){clearTimeout(p.timer);p.resolve({ok:false,reason:'连接中断，正在重新同步'});}this.pending.clear();
       if(this.stopped)return;
+      // P2P 通道断开无法自动重连（信令一次性），直接进入失败态，由玩家重新建房/加入。
+      if(this.dial){this.stopped=true;this.onStatus('failed');this.joinReject?.(new Error('直连已断开，请重新建房或加入'));this.joinReject=null;return;}
       if(event.code===1008||event.code===1009||++this.retries>20){
         this.stopped=true;this.onStatus('failed');this.joinReject?.(new Error('无法连接房间：房间可能已满、已过期或版本不同'));return;
       }

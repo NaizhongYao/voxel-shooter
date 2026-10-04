@@ -2640,7 +2640,7 @@ if (inviteRoom) {
 requestAnimationFrame(frame);
 
 window.__game = {
-  coop, coopRuntime, world, player, cam, flashlight, scene, renderer, mesher,
+  coop, coopRuntime, coopLobby, world, player, cam, flashlight, scene, renderer, mesher,
   enemies, combat, loadout, pickups, lootContainers, openableFurniture, game, effects, doors, lights,
   navigation, saveStore,
   quickWheel, raidInventoryView,
