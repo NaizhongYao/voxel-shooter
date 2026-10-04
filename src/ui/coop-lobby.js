@@ -19,8 +19,11 @@ export class CoopLobby {
           if(a==='create')await client.create(this.name.value);else await client.join(this.code.value,this.name.value);
         }else if(a==='copy'){
           const url=new URL(location.href);url.searchParams.set('room',this.room.code);url.searchParams.set('map',this.room.map);
-          try {await navigator.clipboard.writeText(url.href);this.showMessage('邀请链接已复制，发给好友即可');}
-          catch {this.showMessage(`房间码 ${this.room.code} · 浏览器未允许复制，请手动分享`);}
+          // 本机开服时房主常用 localhost 打开：邀请链接换成局域网地址，队友才连得到。
+          const loopback=['localhost','127.0.0.1','::1','[::1]'].includes(location.hostname);
+          if(loopback&&client.lanHost)url.hostname=client.lanHost;
+          try {await navigator.clipboard.writeText(url.href);this.showMessage(`邀请链接已复制：${url.href}`);}
+          catch {this.showMessage(`房间码 ${this.room.code} · 让队友打开 ${url.origin} 后输入房间码`);}
         }else if(a==='ready')this.callbacks.onReady?.();
         else if(a==='start'){client.send({type:'start'});this.showMessage('正在确认全员存档并部署战局…');}
         else if(a==='leave')this.callbacks.onLeave?.();
@@ -47,7 +50,11 @@ export class CoopLobby {
     if(room.phase==='preparing')this.showMessage('全员准备完成，正在部署战局…');
     const id=this.client.credentials?.id,host=room.host===id,me=room.members.find(m=>m.id===id);
     this.root.querySelector('.coop-connect').hidden=true;
+    // 房主用 localhost 打开时，直接把队友该用的局域网地址摆在最显眼处。
+    const loopback=['localhost','127.0.0.1','::1','[::1]'].includes(location.hostname);
+    const shareLan=loopback&&this.client.lanHost?`http://${this.client.lanHost}:${location.port||8787}/`:null;
     this.roomEl.innerHTML=`<div class="coop-room-top"><span>房间 <strong>${escape(room.code)}</strong></span><button data-coop="copy">复制邀请链接</button><button data-coop="leave">离开房间</button></div>
+      ${shareLan?`<p class="coop-note">队友（同一 WiFi）打开：<code>${shareLan}</code> 并输入房主给的房间码即可加入。</p>`:''}
       <div class="coop-roster">${room.members.map((m,i)=>`<div class="coop-member ${m.ready?'ready':''}"><span class="coop-number">0${i+1}</span><b>${escape(m.name)}${m.id===id?' · 你':''}</b><small>${!m.connected?'断线保留中':m.id===room.host?'房主':'队员'} · ${m.ready?'已准备':'整备中'}</small></div>`).join('')}${Array.from({length:4-room.members.length},()=>'<div class="coop-member empty">等待队友加入</div>').join('')}</div>
       <div class="coop-actions"><label>行动区域 <select class="coop-map" ${!host||room.phase!=='lobby'?'disabled':''}>${[['blackhouse','黑楼'],['clinic','废弃诊所'],['radio','废弃电台']].map(([v,n])=>`<option value="${v}" ${v===room.map?'selected':''}>${n}</option>`).join('')}</select></label>
       <button data-coop="kit" ${room.phase!=='lobby'?'disabled':''}>调整装备</button><button data-coop="ready" ${room.phase!=='lobby'?'disabled':''}>${me?.ready?'取消准备':'我准备好了'}</button>

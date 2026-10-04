@@ -24,7 +24,10 @@ export class CoopClient {
     if(!this.endpoint)throw new Error('联机服务尚未部署，当前仍可玩单人模式');
     const r=await fetch(`${this.endpoint}/rooms`,{method:'POST',signal:AbortSignal.timeout(8000)});
     if(!r.ok)throw new Error('暂时无法创建房间，请稍后重试');
-    const {code}=await r.json();return this.join(code,name);
+    const data=await r.json();
+    // 本机后端会附带局域网地址：从 localhost 建房时，邀请链接必须用它，否则队友点开连的是自己的电脑。
+    this.lanHost=data.lan||null;
+    return this.join(data.code,name);
   }
   join(code,name) {
     if(!this.endpoint)throw new Error('联机服务尚未部署');
