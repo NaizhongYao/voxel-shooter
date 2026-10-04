@@ -42,7 +42,7 @@ export class CoopLobby {
           try {await navigator.clipboard.writeText(url.href);this.showMessage(`邀请链接已复制：${url.href}`);}
           catch {this.showMessage(`房间码 ${this.room.code} · 让队友打开 ${url.origin} 后输入房间码`);}
         }else if(a==='p2p-host')await this.p2pHostStart();
-        else if(a==='p2p-join')await this.p2pGuestStart(this.root.querySelector('.p2p-invite-in').value);
+        else if(a==='p2p-join'){this._box('join');this.showMessage('把房主发来的邀请链接粘贴到下面，再点「生成回答码」。');}
         else if(a==='p2p-accept')await this.p2pHostAccept(this.root.querySelector('.p2p-answer').value);
         else if(a==='p2p-gen'||a==='p2p-copy-invite'||a==='p2p-copy-answer'){
           const field={ 'p2p-gen':'p2p-invite-in','p2p-copy-invite':'p2p-invite','p2p-copy-answer':'p2p-answer-out' }[a];
