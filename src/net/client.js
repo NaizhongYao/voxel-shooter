@@ -27,25 +27,6 @@ export class CoopClient {
     this.ws=null;this.credentials=null;this.room=null;this.seq=0;this.actionId=0;this.pending=new Map();
     this.rtt=0;this.lastMessage=0;this.retries=0;this.stopped=true;this.connected=false;this.timer=null;this.heartbeat=null;
   }
-  async listRooms(signal) {
-    if(!this.endpoint)throw new Error('请先打开局域网开服网址');
-    const controller=new AbortController();const cancel=()=>controller.abort();
-    signal?.addEventListener('abort',cancel,{once:true});if(signal?.aborted)cancel();
-    const timer=setTimeout(cancel,5000);
-    try{
-      const response=await fetch(`${this.endpoint}/rooms`,{signal:controller.signal,cache:'no-store'});
-      if(response.status===404||response.status===405)throw new Error('此服务器不支持房间列表，请开服者下载新版开服包');
-      if(!response.ok)throw new Error('暂时无法读取在线房间，请稍后刷新');
-      const data=await response.json();
-      if(data.build!==BUILD_ID||data.version!==NET_VERSION)throw new Error('服务器版本不一致，请开服者下载新版开服包，并让大家刷新页面');
-      if(!Array.isArray(data.rooms))throw new Error('房间列表格式无效，请开服者更新开服包');
-      return data.rooms;
-    }catch(err){
-      if(controller.signal.aborted)throw new Error('刷新房间超时或已取消，请确认开服窗口仍在运行');
-      if(err instanceof TypeError)throw new Error('无法读取局域网房间，请确认已打开正确的开服网址');
-      throw err;
-    }finally{clearTimeout(timer);signal?.removeEventListener('abort',cancel);}
-  }
   async create(name) {
     if(!this.endpoint)throw new Error('联机服务尚未部署，当前仍可玩单人模式');
     const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),8000);

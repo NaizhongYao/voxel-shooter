@@ -1,6 +1,5 @@
 import { CoopP2P, P2PHost, p2pAvailable, decodeSignal, encodeSignal } from '../net/p2p.js';
 import { connectionReport, netLog, lanPageURL } from '../net/diagnostics.js';
-import { RoomDirectory } from './room-directory.js';
 
 const escape = s => String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;');
 export class CoopLobby {
@@ -14,7 +13,6 @@ export class CoopLobby {
     this.root.innerHTML=`<header><span class="coop-kicker">SQUAD LINK / 好友合作</span><h2>一起进去，一起回来。</h2><p>2–4 人合作 · 直连交换邀请与回答；服务器模式使用房间码 · 无账号</p></header>
       <div class="coop-connect"><label>呼号<input class="coop-name" maxlength="16" value="行动员" autocomplete="nickname"></label>
       <button type="button" data-coop="create">创建房间</button><label>房间码<input class="coop-code" maxlength="6" placeholder="6 位房间码" autocapitalize="characters" autocomplete="off"></label><button type="button" data-coop="join">加入好友</button></div>
-      <section class="coop-directory" aria-label="局域网在线房间"></section>
       <div class="coop-p2p"><div class="coop-p2p-head"><b>局域网直连</b><span>无需公网服务器 · 同一局域网优先直连 · 失败可用下方备用方式</span></div>
         <div class="coop-p2p-row"><button type="button" class="primary" data-coop="p2p-host">创建直连房间</button><button type="button" data-coop="p2p-join">我有邀请码</button></div>
         <div class="coop-p2p-box invite" hidden><label>把这条邀请链接发给队友（在系统浏览器打开）：<textarea class="p2p-invite" readonly rows="2"></textarea></label><button type="button" data-coop="p2p-copy-invite">复制邀请链接</button></div>
@@ -26,13 +24,12 @@ export class CoopLobby {
       <div class="coop-recovery" hidden><b>连接没有完成</b><p class="coop-failure"></p><button type="button" data-coop="p2p-retry">重新交换邀请</button><button type="button" data-coop="fallback">查看备用方式</button></div>
       <details class="coop-fallback"><summary>直连失败？局域网服务器备用方式（Windows / Mac）</summary>
         <p>此方式不使用 WebRTC：一位朋友用 Windows 或 Mac 电脑开服，其他设备在浏览器里打开开服窗口显示的网址。不能自动切换，也不会迁移正在进行的战局。存档按网址独立。</p>
-        <ol><li>开服者安装 Node.js 22 或更新版本（<a href="https://nodejs.org/en/download">官方下载</a>）。</li><li>下载并解压<a href="./downloads/protocol-clearance-lan.zip" download>局域网开服包</a>。Windows 双击 Start-Windows.cmd；Mac 在终端输入 sh，将 Start-Mac.command 拖进终端后回车。依赖已包含，不需要 npm install。</li><li>房主在窗口显示的局域网网址打开游戏，点「创建房间」。队友打开相同网址，点「浏览在线房间」并选择小队加入，也可输入房间码。窗口保持运行。</li></ol>
+        <ol><li>开服者安装 Node.js 22 或更新版本（<a href="https://nodejs.org/en/download">官方下载</a>）。</li><li>下载并解压<a href="./downloads/protocol-clearance-lan.zip" download>局域网开服包</a>。Windows 双击 Start-Windows.cmd；Mac 在终端输入 sh，将 Start-Mac.command 拖进终端后回车。依赖已包含，不需要 npm install。</li><li>房主在窗口显示的局域网网址打开游戏，点「创建房间」。队友打开相同网址，输入房间码点「加入好友」。窗口保持运行。</li></ol>
         <label>开服窗口显示的局域网网址<input class="coop-lan-url" placeholder="http://192.168.1.20:8787/" autocomplete="off"></label><button type="button" data-coop="lan-open">打开备用局域网页面</button>
         <p>必须打开整个局域网页面，不要从 HTTPS 游戏页面连接 HTTP 后端。浏览器询问本地网络权限时请允许。访客网络或设备隔离可能阻断设备互访。没有电脑开服时，此备用方式不可用。</p>
       </details>
       <details class="coop-diagnostics"><summary>连接诊断与日志</summary><p class="coop-capabilities"></p><p>微信等内置浏览器可能禁用直连，请用更新的 Safari / Chrome / Edge / Firefox。房主保持页面在前台，避免锁屏。</p><button type="button" data-coop="diagnostics">生成诊断日志</button><button type="button" data-coop="diagnostics-copy">复制诊断日志</button><textarea class="coop-log" aria-label="诊断日志" readonly rows="6"></textarea><p>不记录邀请码、回答 SDP 或身份凭据；浏览器版本和错误信息仍可能包含设备信息，请只发给信任的人。</p></details>
       <div class="coop-room" hidden></div>`;
-    this.directory=new RoomDirectory(this.root.querySelector('.coop-directory'),client,{available:this.serverUsable&&new URL(client.endpoint).hostname===location.hostname});
     this.name=this.root.querySelector('.coop-name');this.code=this.root.querySelector('.coop-code');
     this.message=this.root.querySelector('.coop-message');this.roomEl=this.root.querySelector('.coop-room');
     this.root.addEventListener('click',event=>void this._click(event));
@@ -53,19 +50,15 @@ export class CoopLobby {
   }
   async _click(event){
     const button=event.target.closest('[data-coop]');const a=button?.dataset.coop;if(!a||button.disabled)return;
-    const longAction=['p2p-host','p2p-new','p2p-gen','p2p-accept','p2p-retry','create','join','browse-join'].includes(a);
+    const longAction=['p2p-host','p2p-new','p2p-gen','p2p-accept','p2p-retry','create','join'].includes(a);
     if(longAction&&this.busy)return;
     if(longAction)this._busy(true);
     try{
-      if(a==='browse'||a==='browse-refresh'){
-        if(this.client.connected)throw new Error('请先离开当前房间再浏览其它房间');
-        if(a==='browse')await this.directory.start();else await this.directory.refresh();
-        if(!this.directory.available)this.root.querySelector('.coop-fallback').open=true;
-      }else if(a==='create'||a==='join'||a==='browse-join'){
+      if(a==='create'||a==='join'){
         if(this.client.connected)throw new Error('请先离开当前房间再切换连接方式');
-        this.directory.stop();this.flowGeneration++;this.client.stop(false);this.p2pConn?.close();for(const conn of this.p2pInvites)conn.close();this.p2pHost.dispose();this.p2pHost=new P2PHost();this.p2pInvites=[];this.client.dial=null;this.p2pRole=null;
+        this.flowGeneration++;this.client.stop(false);this.p2pConn?.close();for(const conn of this.p2pInvites)conn.close();this.p2pHost.dispose();this.p2pHost=new P2PHost();this.p2pInvites=[];this.client.dial=null;this.p2pRole=null;
         this.showMessage('正在连接房间服务…');
-        if(a==='create')await this.client.create(this.name.value);else await this.client.join(a==='browse-join'?button.dataset.code:this.code.value,this.name.value);
+        if(a==='create')await this.client.create(this.name.value);else await this.client.join(this.code.value,this.name.value);
       }else if(a==='copy'){
         const url=new URL(location.href);url.hash='';url.searchParams.set('room',this.room.code);url.searchParams.set('map',this.room.map);
         if(['localhost','127.0.0.1','::1','[::1]'].includes(location.hostname)&&this.client.lanHost)url.hostname=this.client.lanHost;
@@ -117,7 +110,7 @@ export class CoopLobby {
       },onFailure:err=>{if(generation===this.flowGeneration)this.connectionFailed(err);}});
   }
   async p2pHostStart(){
-    this.trace('host-start');this.directory.stop();
+    this.trace('host-start');
     if(!p2pAvailable())throw new Error('当前浏览器不支持 WebRTC，请使用局域网服务器备用方式');
     if(this.client.connected&&!this.client.dial)throw new Error('请先离开服务器房间再切换直连');
     if(this.client.dial&&this.p2pRole!=='host'&&this.client.connected)throw new Error('请先离开当前房间再创建房间');
@@ -137,7 +130,7 @@ export class CoopLobby {
     this.showMessage('步骤 1/3：把邀请发给队友。在系统浏览器打开；收到回答后粘贴，再点「完成连接」。邀请 10 分钟有效；生成新邀请后旧邀请作废。');
   }
   async p2pGuestStart(invite){
-    this.trace('guest-start');this.directory.stop();
+    this.trace('guest-start');
     if(!p2pAvailable())throw new Error('当前浏览器不支持 WebRTC，请使用局域网服务器备用方式');
     if(this.client.connected)throw new Error('请先离开当前房间，再接受新邀请');
     if(!String(invite??'').trim())throw new Error('先粘贴房主的完整邀请链接');
@@ -205,7 +198,6 @@ export class CoopLobby {
     this.trace('render',room?.phase,room?.members?.length??0);this.room=room;this.roomEl.hidden=!room;if(!room)return;
     if(room.phase==='preparing')this.showMessage('全员准备完成，正在部署战局…');
     const id=this.client.credentials?.id,host=room.host===id,me=room.members.find(m=>m.id===id);
-    this.directory.stop();this.directory.root.hidden=true;
     this.root.querySelector('.coop-connect').hidden=true;this.root.querySelector('.coop-p2p').hidden=!this.p2pInviteOpen;
     const loopback=['localhost','127.0.0.1','::1','[::1]'].includes(location.hostname);
     const shareLan=!this.client.dial&&loopback&&this.client.lanHost?`http://${this.client.lanHost}:${location.port||8787}/`:null;
@@ -223,7 +215,6 @@ export class CoopLobby {
     this.hud.hidden=false;this.hud.innerHTML=`<div class="coop-hud-head">小队 ${escape(this.room?.code)} · ${this.client.connected?(this.client.rtt?`${this.client.rtt} ms`:'直连'):(this.client.dial?'直连中断，请重新交换邀请':'正在重连')}</div>`+snapshot.players.map(p=>`<div><b>${escape(p.name)}</b><span>${p.status==='extracted'?'已撤离':p.status==='dead'?'阵亡':`${p.hp} HP · ${p.armor} 甲`}</span></div>`).join('');
   }
   reset(){
-    this.directory.stop();this.directory.root.hidden=false;
     this.recoveryOpen=false;this.flowGeneration++;this.p2pConn?.close();for(const conn of this.p2pInvites)conn.close();this.p2pHost.dispose();this.p2pHost=new P2PHost();
     this.room=null;this.roomEl.hidden=true;this.root.querySelector('.coop-connect').hidden=false;this.root.querySelector('.coop-p2p').hidden=false;
     for(const box of this.root.querySelectorAll('.coop-p2p-box'))box.hidden=true;
