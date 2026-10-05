@@ -125,7 +125,7 @@ export class CoopRuntime {
       else if(input.justPressed('weaponSlot0'))c.chooseWeaponSwap(1);
       else if(input.justPressed('weaponSlot1'))c.chooseWeaponSwap(2);
     }
-    const panel=game.inventoryOpen||c.quickWheel.isOpen||game.over||c.swapping();
+    const panel=c.lobby.recoveryOpen||game.inventoryOpen||c.quickWheel.isOpen||game.over||c.swapping();
     if(panel&&input.down('fire'))this.heldFire=true;
     if(!input.down('fire'))this.heldFire=false;
     if(!panel&&live){cam.addMouse(input.mouseDX,input.mouseDY);cam.aiming=input.down('aim');}

@@ -2529,10 +2529,11 @@ function coopKit() {
   } : null) };
 }
 function showCoopLobby() {
-  hideEquipment(); hud.brief.style.display = 'none'; hud.missions.style.display = 'flex';
+  document.exitPointerLock?.();hideEquipment(); hud.brief.style.display = 'none'; hud.missions.style.display = 'flex';
 }
 function enterCoop() {
   document.body.classList.add('coop-active');
+  if(coopLobby?.recoveryOpen){showCoopLobby();return;}
   if (hud.missions.style.display !== 'none') showCoopLobby();
   hud.missions.style.display = 'none'; hud.brief.style.display = 'none';
   if (hud.equipment?.classList.contains('active')) hideEquipment();
@@ -2569,10 +2570,11 @@ coop = new CoopClient({
     const recovery = pending?.loadout?.coop;
     return recovery?.room === coop?.code && recovery?.raidId ? { raidId: recovery.raidId } : null;
   },
-  onStatus: status => coopLobby?.setStatus(status),
+  onStatus: status => {coopLobby?.setStatus(status);if(status==='failed'&&coopRuntime?.active)showCoopLobby();},
   onMessage: msg => {
     if (msg.type === 'room') {
       coopLobby.render(msg);
+      if(coop.dial&&coopLobby.p2pRole==='host'&&msg.phase==='active'&&msg.members.some(m=>!m.connected)){coopLobby.recoveryOpen=true;showCoopLobby();coopLobby.showMessage('队友直连中断：点「邀请新队友」发送新邀请，让原队友重新交换回答以恢复原座位');}
       if (msg.map !== LEVEL.id && !coop.dial) {
         const url = new URL(location.href); url.searchParams.set('map', msg.map); url.searchParams.set('room', msg.code);
         coop.stop(false); location.href = url.href; return;
@@ -2610,7 +2612,7 @@ coopLobby = new CoopLobby(coop, {
   onMap: map => coop.send({ type: 'map', map }),
   onOpenKit: () => { hud.missions.style.display = 'none'; showEquipment(); },
   onLeave: () => {
-    if (coopRuntime?.active) return;
+    if (coopRuntime?.active) {coopLobby.showMessage('战局进行中，请用重新交换邀请恢复原座位；离开会影响本次战局，请等待结算');return;}
     if(saveStore.getPendingRaid()?.loadout?.coop)saveStore.settleRaid({success:false,extracted:false,carriedLoot:[]});
     coop.send({ type: 'leave' }); coop.stop(); coop.room = null; coopLobby.reset();
     const url = new URL(location.href); url.searchParams.delete('room'); history.replaceState(null, '', url);

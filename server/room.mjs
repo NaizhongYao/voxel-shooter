@@ -1,5 +1,5 @@
 import { CoopSimulation, normalizeKit } from './simulation.mjs';
-import { NET_VERSION, BUILD_ID, MAX_PLAYERS, RECONNECT_MS, parseInput, cleanName } from '../src/net/protocol.js';
+import { NET_VERSION, BUILD_ID, MAX_PLAYERS, RECONNECT_MS, parseInput, cleanName, randomId } from '../src/net/protocol.js';
 
 // 房主只管理集合出发，不承载战局计算；房主掉线不影响其他人的敌人、物品或撤离。
 export class CoopRoom {
@@ -89,7 +89,7 @@ export class CoopRoom {
     if(msg.type==='start'&&id===this.host&&this.phase==='lobby') {
       const members=[...this.members.values()];
       if(members.length<2||members.some(m=>!m.connected||!m.ready)){this.send(id,{type:'error',message:'至少 2 人加入并全部准备后才能出发'});return;}
-      this.phase='preparing';this.raidId=crypto.randomUUID();this.prepareUntil=this.now()+20_000;
+      this.phase='preparing';this.raidId=randomId();this.prepareUntil=this.now()+20_000;
       this.broadcast({type:'prepare',raidId:this.raidId,map:this.map});this.broadcastLobby();return;
     }
     if(msg.type==='commit'&&this.phase==='preparing'&&msg.raidId===this.raidId) {
